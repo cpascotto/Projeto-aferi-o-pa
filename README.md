@@ -57,5 +57,6 @@ flutter_app\build\app\outputs\flutter-apk\vincere.apk
 |---|---|
 | `API_BASE_URL` | URL principal da API |
 | `API_FALLBACK_BASE_URL` | URL de fallback da API |
+| `ERP_AFERICAO_URL` | URL unica da Forza para `sdtAfericao01Ent` |
 
-Ambas sao injetadas via `--dart-define` no momento do build.
+Todas sao injetadas via `--dart-define` no momento do build.

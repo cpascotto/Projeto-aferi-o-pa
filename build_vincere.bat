@@ -5,6 +5,11 @@ setlocal EnableExtensions
 :: build_vincere.bat
 :: Builda o APK Vincere e instala no celular via ADB.
 ::
+:: Uso:
+::   build_vincere.bat            -> build incremental (rapido)
+::   build_vincere.bat --clean    -> faz flutter clean antes
+::                                   (forca download Chaquopy do zero)
+::
 :: Configuracoes que voce pode precisar ajustar:
 ::   API_BASE_URL          - URL da API de producao
 ::   FLUTTER_ROOT          - pasta de instalacao do Flutter
@@ -12,12 +17,16 @@ setlocal EnableExtensions
 ::   JAVA_HOME             - pasta do JDK (Android Studio JBR)
 :: ============================================================
 
+set "DO_CLEAN=0"
+if /I "%~1"=="--clean" set "DO_CLEAN=1"
+if /I "%~1"=="-c"       set "DO_CLEAN=1"
+
 set "PROJECT_ROOT=%~dp0"
 if "%PROJECT_ROOT:~-1%"=="\" set "PROJECT_ROOT=%PROJECT_ROOT:~0,-1%"
 
 :: --- Configuracoes de API ---
-set "API_BASE_URL=http://187.77.44.8:8030"
-set "API_FALLBACK_BASE_URL=http://187.77.44.8:8030"
+:: A API local foi descontinuada. O app usa apenas o endpoint do ERP.
+set "ERP_AFERICAO_URL=https://api.forzauno.com.br/KB16WT/rest/Forza/prcAfericao01"
 
 :: --- Caminhos de ferramentas ---
 set "FLUTTER_ROOT=C:\flutter"
@@ -31,13 +40,13 @@ set "SHORT_DRIVE_ALIAS=X:"
 set "FLUTTER_DIR=%SHORT_DRIVE_ALIAS%\flutter_app"
 
 :: --- Caminhos do APK ---
-set "APK_PATH=%FLUTTER_DIR%\build\app\outputs\flutter-apk\app-debug.apk"
+set "APK_PATH=%FLUTTER_DIR%\build\app\outputs\flutter-apk\app-release.apk"
 set "VINCERE_APK_PATH=%FLUTTER_DIR%\build\app\outputs\flutter-apk\vincere.apk"
 set "PHONE_DOWNLOAD_PATH=/sdcard/Download/vincere.apk"
 
 echo.
 echo [1/7] Preparando ambiente...
-echo API_BASE_URL=%API_BASE_URL%
+echo ERP_AFERICAO_URL=%ERP_AFERICAO_URL%
 
 call :ensure_subst "%DRIVE_ALIAS%" "%PROJECT_ROOT%"
 if errorlevel 1 goto :fail
@@ -65,9 +74,11 @@ set "ANDROID_HOME=%ANDROID_SDK_ROOT%"
 set "PATH=%FLUTTER_ROOT%\bin;%JAVA_HOME%\bin;%ANDROID_SDK_ROOT%\platform-tools;%PATH%"
 
 echo.
-echo [2/7] Testando conectividade com a API...
-call :wait_http "%API_BASE_URL%/api/patients" "API Vincere" 5
-if errorlevel 1 goto :fail
+echo [2/7] Verificando ERP (informativo, nao bloqueia o build)...
+call :wait_http "%ERP_AFERICAO_URL%" "ERP Forza" 2
+if errorlevel 1 (
+  echo AVISO: ERP nao respondeu agora. O build vai continuar mesmo assim.
+)
 
 echo.
 echo [3/7] Verificando dispositivo conectado...
@@ -75,21 +86,25 @@ echo [3/7] Verificando dispositivo conectado...
 if errorlevel 1 goto :fail
 
 echo.
-echo [4/7] Limpando build anterior...
+echo [4/7] Preparando build...
 cd /d "%FLUTTER_DIR%"
 if exist "%FLUTTER_DIR%\android\gradlew.bat" (
   call "%FLUTTER_DIR%\android\gradlew.bat" --stop >nul 2>&1
 )
-call "%FLUTTER_ROOT%\bin\flutter.bat" clean
-if errorlevel 1 goto :fail
+if "%DO_CLEAN%"=="1" (
+  echo Modo --clean ligado: rodando flutter clean...
+  call "%FLUTTER_ROOT%\bin\flutter.bat" clean
+  if errorlevel 1 goto :fail
+) else (
+  echo Build incremental ^(use --clean para forcar limpeza completa^).
+)
 call "%FLUTTER_ROOT%\bin\flutter.bat" pub get
 if errorlevel 1 goto :fail
 
 echo.
 echo [5/7] Buildando APK...
-call "%FLUTTER_ROOT%\bin\flutter.bat" build apk --debug ^
-  --dart-define=API_BASE_URL=%API_BASE_URL% ^
-  --dart-define=API_FALLBACK_BASE_URL=%API_FALLBACK_BASE_URL%
+call "%FLUTTER_ROOT%\bin\flutter.bat" build apk --release ^
+  --dart-define=ERP_AFERICAO_URL=%ERP_AFERICAO_URL%
 if errorlevel 1 goto :fail
 
 if not exist "%APK_PATH%" (
@@ -114,7 +129,7 @@ if errorlevel 1 goto :fail
 echo.
 echo ============================================================
 echo Build e instalacao concluidos com sucesso.
-echo API usada  : %API_BASE_URL%
+echo ERP usado  : %ERP_AFERICAO_URL%
 echo APK local  : %VINCERE_APK_PATH%
 echo APK celular: %PHONE_DOWNLOAD_PATH%
 echo ============================================================

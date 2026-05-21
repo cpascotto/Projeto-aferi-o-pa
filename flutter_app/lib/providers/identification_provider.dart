@@ -1,12 +1,9 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image/image.dart' as img;
 
 import '../models/patient_model.dart';
-import '../services/api_service.dart';
-import '../services/cpf_formatter.dart';
 import '../services/embedding_service.dart';
 import '../services/face_detector_service.dart';
 import '../services/face_image_service.dart';
@@ -17,8 +14,6 @@ const double _maxAbsYaw = 12.0;
 const double _maxAbsRoll = 8.0;
 const double _maxAbsPitch = 12.0;
 const double _minEyeOpenProbability = 0.35;
-const double _identifyThreshold = 0.30;
-const double _identifyMinGap = 0.04;
 
 enum IdentificationStatus {
   idle,
@@ -34,24 +29,37 @@ class IdentificationState {
     this.status = IdentificationStatus.idle,
     this.patient,
     this.faceImageB64,
+    this.faceEmbedding,
     this.errorMessage,
+    this.contractId,
+    this.deviceId,
+    this.nextInteractionAt,
     List<String>? logs,
   }) : logs = logs ?? const [];
 
   final IdentificationStatus status;
   final PatientModel? patient;
   final String? faceImageB64;
+  final List<double>? faceEmbedding;
   final String? errorMessage;
+  final int? contractId;
+  final String? deviceId;
+  final String? nextInteractionAt;
   final List<String> logs;
 
   IdentificationState copyWith({
     IdentificationStatus? status,
     PatientModel? patient,
     String? faceImageB64,
+    List<double>? faceEmbedding,
     String? errorMessage,
+    int? contractId,
+    String? deviceId,
+    String? nextInteractionAt,
     List<String>? logs,
     bool clearPatient = false,
     bool clearFaceImageB64 = false,
+    bool clearFaceEmbedding = false,
     bool clearLogs = false,
   }) {
     return IdentificationState(
@@ -59,7 +67,12 @@ class IdentificationState {
       patient: clearPatient ? null : (patient ?? this.patient),
       faceImageB64:
           clearFaceImageB64 ? null : (faceImageB64 ?? this.faceImageB64),
+      faceEmbedding:
+          clearFaceEmbedding ? null : (faceEmbedding ?? this.faceEmbedding),
       errorMessage: errorMessage,
+      contractId: contractId ?? this.contractId,
+      deviceId: deviceId ?? this.deviceId,
+      nextInteractionAt: nextInteractionAt ?? this.nextInteractionAt,
       logs: clearLogs ? const [] : (logs ?? this.logs),
     );
   }
@@ -68,7 +81,6 @@ class IdentificationState {
 final identificationProvider =
     StateNotifierProvider<IdentificationNotifier, IdentificationState>((ref) {
   return IdentificationNotifier(
-    apiService: ref.watch(apiServiceProvider),
     embeddingService: ref.watch(embeddingServiceProvider),
     faceImageService: ref.watch(faceImageServiceProvider),
     faceDetectorService: ref.watch(faceDetectorServiceProvider),
@@ -78,19 +90,16 @@ final identificationProvider =
 
 class IdentificationNotifier extends StateNotifier<IdentificationState> {
   IdentificationNotifier({
-    required ApiService apiService,
     required EmbeddingService embeddingService,
     required FaceImageService faceImageService,
     required FaceDetectorService faceDetectorService,
     required DebugLogController debugLogController,
-  })  : _apiService = apiService,
-        _embeddingService = embeddingService,
+  })  : _embeddingService = embeddingService,
         _faceImageService = faceImageService,
         _faceDetectorService = faceDetectorService,
         _debugLogController = debugLogController,
         super(IdentificationState());
 
-  final ApiService _apiService;
   final EmbeddingService _embeddingService;
   final FaceImageService _faceImageService;
   final FaceDetectorService _faceDetectorService;
@@ -119,45 +128,14 @@ class IdentificationNotifier extends StateNotifier<IdentificationState> {
       _appendLog('Face preparada localmente. Extraindo embedding no APK...');
       final probeEmbedding =
           await _embeddingService.extractEmbedding(prepared.croppedFace);
-      _appendLog(
-          'Embedding extraido. Baixando pacientes para comparacao local...');
-      final patients = await _apiService.fetchPatients();
-      final rankedMatches = _rankPatientsByDistance(probeEmbedding, patients);
-      final bestMatch = rankedMatches.isEmpty ? null : rankedMatches.first;
-      final secondMatch = rankedMatches.length > 1 ? rankedMatches[1] : null;
+      _appendLog('Embedding extraido. Validando biometria no ERP...');
 
-      if (bestMatch == null || bestMatch.distance > _identifyThreshold) {
-        _appendLog('Nenhum paciente ficou dentro do threshold local.');
-        state = state.copyWith(
-          status: IdentificationStatus.notRecognized,
-          faceImageB64: prepared.faceImageB64,
-          clearPatient: true,
-        );
-        return IdentificationStatus.notRecognized;
-      }
-
-      if (secondMatch != null &&
-          (secondMatch.distance - bestMatch.distance) < _identifyMinGap) {
-        _appendLog(
-          'Reconhecimento ambíguo: os dois melhores pacientes ficaram muito próximos.',
-        );
-        state = state.copyWith(
-          status: IdentificationStatus.notRecognized,
-          faceImageB64: prepared.faceImageB64,
-          clearPatient: true,
-        );
-        return IdentificationStatus.notRecognized;
-      }
-
-      _appendLog(
-        'Paciente reconhecido localmente: ${bestMatch.patient.name} '
-        '(${formatCpfDigits(bestMatch.patient.cpf)}) com distância '
-        '${bestMatch.distance.toStringAsFixed(4)}.',
-      );
+      // Não limpa o patient — preserva dados ERP (clientId, contractId)
+      // que podem ter sido salvos por setErpData antes desta chamada.
       state = state.copyWith(
         status: IdentificationStatus.recognized,
-        patient: bestMatch.patient,
         faceImageB64: prepared.faceImageB64,
+        faceEmbedding: probeEmbedding,
       );
       return IdentificationStatus.recognized;
     } catch (e) {
@@ -170,82 +148,20 @@ class IdentificationNotifier extends StateNotifier<IdentificationState> {
     }
   }
 
-  Future<bool> registerByCpf(String cpf) async {
-    try {
-      _appendLog('Cadastrando dados básicos do paciente...');
-      state = state.copyWith(
-        status: IdentificationStatus.processing,
-        errorMessage: null,
-      );
-      final patient = await _apiService.registerBasicPatient(
-        cpf: cpf,
-      );
-
-      _appendLog(
-        'Paciente criado com ID ${patient.id}. Iniciando cadastro facial guiado.',
-      );
-      state = state.copyWith(
-        status: IdentificationStatus.registered,
-        patient: patient,
-      );
-      return true;
-    } catch (e) {
-      _appendLog('Erro no cadastro basico: $e');
-      state = state.copyWith(
-        status: IdentificationStatus.error,
-        errorMessage: e.toString(),
-      );
-      return false;
-    }
-  }
-
-  Future<bool> registerFaceSampleFromImagePath({
-    required int patientId,
-    required String captureType,
-    required String imagePath,
-  }) async {
-    try {
-      _appendLog('Captura "$captureType" recebida: $imagePath');
-      state = state.copyWith(
-        status: IdentificationStatus.processing,
-        errorMessage: null,
-      );
-
-      final prepared = await _prepareFaceCapture(
-        imagePath,
-        mode: _CaptureMode.enrollment,
-      );
-      _appendLog(
-          'Amostra "$captureType" pronta. Extraindo embedding no APK...');
-      final faceEmbedding =
-          await _embeddingService.extractEmbedding(prepared.croppedFace);
-      _appendLog('Enviando amostra facial "$captureType"...');
-
-      final patient = await _apiService.registerFaceSample(
-        patientId: patientId,
-        captureType: captureType,
-        faceImageB64: prepared.faceImageB64,
-        faceEmbedding: faceEmbedding,
-      );
-
-      _appendLog(
-        'Amostra "$captureType" cadastrada com sucesso. '
-        'Total atual: ${patient.faceSamplesCount}.',
-      );
-      state = state.copyWith(
-        status: IdentificationStatus.registered,
-        patient: patient,
-        faceImageB64: prepared.faceImageB64,
-      );
-      return true;
-    } catch (e) {
-      _appendLog('Erro ao cadastrar amostra "$captureType": $e');
-      state = state.copyWith(
-        status: IdentificationStatus.error,
-        errorMessage: e.toString(),
-      );
-      return false;
-    }
+  /// Armazena os dados do paciente vindos de uma resposta ERP (N2)
+  /// para que as telas seguintes possam acessar contractId, deviceId, etc.
+  void setErpData({
+    required PatientModel patient,
+    required int contractId,
+    required String deviceId,
+    String? nextInteractionAt,
+  }) {
+    state = state.copyWith(
+      patient: patient,
+      contractId: contractId,
+      deviceId: deviceId,
+      nextInteractionAt: nextInteractionAt,
+    );
   }
 
   void reset() {
@@ -366,57 +282,6 @@ class IdentificationNotifier extends StateNotifier<IdentificationState> {
     return '[$hh:$mm:$ss] $message';
   }
 
-  List<_RankedPatientMatch> _rankPatientsByDistance(
-    List<double> probeEmbedding,
-    List<PatientModel> patients,
-  ) {
-    final ranked = <_RankedPatientMatch>[];
-
-    for (final patient in patients) {
-      double? bestDistance;
-
-      for (final embedding in patient.faceEmbeddings) {
-        if (embedding.length != probeEmbedding.length) {
-          continue;
-        }
-
-        final distance = _cosineDistance(probeEmbedding, embedding);
-        if (bestDistance == null || distance < bestDistance) {
-          bestDistance = distance;
-        }
-      }
-
-      if (bestDistance == null) {
-        continue;
-      }
-
-      ranked.add(_RankedPatientMatch(patient: patient, distance: bestDistance));
-    }
-
-    ranked.sort((left, right) => left.distance.compareTo(right.distance));
-    return ranked;
-  }
-
-  double _cosineDistance(List<double> left, List<double> right) {
-    var dot = 0.0;
-    var leftNorm = 0.0;
-    var rightNorm = 0.0;
-
-    for (var index = 0; index < left.length; index++) {
-      final leftValue = left[index];
-      final rightValue = right[index];
-
-      dot += leftValue * rightValue;
-      leftNorm += leftValue * leftValue;
-      rightNorm += rightValue * rightValue;
-    }
-
-    if (leftNorm <= 0.0 || rightNorm <= 0.0) {
-      return 1.0;
-    }
-
-    return 1.0 - (dot / (math.sqrt(leftNorm) * math.sqrt(rightNorm)));
-  }
 }
 
 class _PreparedFaceCapture {
@@ -432,14 +297,4 @@ class _PreparedFaceCapture {
 enum _CaptureMode {
   identification,
   enrollment,
-}
-
-class _RankedPatientMatch {
-  const _RankedPatientMatch({
-    required this.patient,
-    required this.distance,
-  });
-
-  final PatientModel patient;
-  final double distance;
 }

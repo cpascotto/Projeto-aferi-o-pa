@@ -53,13 +53,15 @@ class MainActivity : FlutterActivity() {
         private val syncCommand: ByteArray = byteArrayOf(0x6C, 0x37, 0x01, 0x00, 0x5A)
     }
 
-    private var currentTargetDeviceName = defaultTargetDeviceName
+    private var currentTargetDeviceName = ""
+    private var currentTargetDeviceAddress = ""
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val embeddingExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val bloodPressureExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val bloodPressureCancelled = AtomicBoolean(false)
     private var pendingBloodPressureResult: MethodChannel.Result? = null
+    private var pendingBluetoothPermissionResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -184,11 +186,25 @@ class MainActivity : FlutterActivity() {
                     startActivity(enableIntent)
                     result.success(true)
                 }
+                "ensureBluetoothPermissions" -> {
+                    ensureBluetoothPermissions(result)
+                }
+                "setTargetDevice" -> {
+                    val name = call.argument<String>("name") ?: ""
+                    val id = call.argument<String>("id") ?: ""
+                    currentTargetDeviceName = name
+                    currentTargetDeviceAddress = id.uppercase()
+                    Log.i(
+                        bloodPressureTag,
+                        "Medidor BLE alvo: ${currentTargetDeviceName.ifBlank { "sem nome" }} / ${currentTargetDeviceAddress.ifBlank { "sem id" }}",
+                    )
+                    result.success(true)
+                }
                 "setTargetDeviceName" -> {
                     val name = call.argument<String>("name") ?: ""
-                    currentTargetDeviceName =
-                        name.ifBlank { defaultTargetDeviceName }
-                    Log.i(bloodPressureTag, "Dispositivo alvo: $currentTargetDeviceName")
+                    currentTargetDeviceName = name.ifBlank { defaultTargetDeviceName }
+                    currentTargetDeviceAddress = ""
+                    Log.i(bloodPressureTag, "Dispositivo alvo legado: $currentTargetDeviceName")
                     result.success(true)
                 }
                 "getBondedDevices" -> {
@@ -204,7 +220,11 @@ class MainActivity : FlutterActivity() {
                         ?.mapNotNull { device ->
                             val name = device.name?.takeIf { it.isNotBlank() }
                                 ?: return@mapNotNull null
-                            mapOf("name" to name, "address" to device.address)
+                            mapOf(
+                                "name" to name,
+                                "id" to device.address,
+                                "address" to device.address,
+                            )
                         } ?: emptyList()
                     result.success(bonded)
                 }
@@ -228,15 +248,19 @@ class MainActivity : FlutterActivity() {
                         ?.mapNotNull { device ->
                             val name = device.name?.takeIf { it.isNotBlank() }
                                 ?: return@mapNotNull null
-                            mapOf("name" to name, "address" to device.address)
+                            mapOf(
+                                "name" to name,
+                                "id" to device.address,
+                                "address" to device.address,
+                            )
                         } ?: emptyList()
 
-                    val found = mutableListOf<Map<String, String>>()
+                    val found = mutableListOf<Map<String, Any>>()
                     val seen = mutableSetOf<String>()
 
                     bonded.forEach { d ->
-                        val name = d["name"] ?: return@forEach
-                        if (seen.add(name)) found.add(d)
+                        val address = d["address"] ?: return@forEach
+                        if (seen.add(address)) found.add(d)
                     }
 
                     val scanCb = object : ScanCallback() {
@@ -249,11 +273,14 @@ class MainActivity : FlutterActivity() {
                                     ?: scanResult.device.name
                                     ?: return
                             if (name.isBlank()) return
-                            if (seen.add(name)) {
+                            val address = scanResult.device.address
+                            if (seen.add(address)) {
                                 found.add(
                                     mapOf(
                                         "name" to name,
-                                        "address" to scanResult.device.address,
+                                        "id" to address,
+                                        "address" to address,
+                                        "rssi" to scanResult.rssi,
                                     ),
                                 )
                             }
@@ -312,13 +339,27 @@ class MainActivity : FlutterActivity() {
 
         if (requestCode != bloodPressurePermissionRequest) return
 
-        val result = pendingBloodPressureResult ?: return
-        pendingBloodPressureResult = null
+        val captureResult = pendingBloodPressureResult
+        if (captureResult != null) {
+            pendingBloodPressureResult = null
+            if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                startBloodPressureCapture(captureResult)
+            } else {
+                captureResult.error(
+                    "bluetooth_permission_denied",
+                    "Permissao de Bluetooth negada.",
+                    null,
+                )
+            }
+            return
+        }
 
+        val permissionResult = pendingBluetoothPermissionResult ?: return
+        pendingBluetoothPermissionResult = null
         if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-            startBloodPressureCapture(result)
+            permissionResult.success(true)
         } else {
-            result.error(
+            permissionResult.error(
                 "bluetooth_permission_denied",
                 "Permissao de Bluetooth negada.",
                 null,
@@ -389,6 +430,29 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun ensureBluetoothPermissions(result: MethodChannel.Result) {
+        val missingPermissions = missingBloodPressurePermissions()
+        if (missingPermissions.isEmpty()) {
+            result.success(true)
+            return
+        }
+
+        if (pendingBluetoothPermissionResult != null || pendingBloodPressureResult != null) {
+            result.error(
+                "bluetooth_permission_pending",
+                "Ja existe uma solicitacao de permissao Bluetooth em andamento.",
+                null,
+            )
+            return
+        }
+
+        pendingBluetoothPermissionResult = result
+        requestPermissions(
+            missingPermissions.toTypedArray(),
+            bloodPressurePermissionRequest,
+        )
+    }
+
     private fun missingBloodPressurePermissions(): List<String> {
         val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             listOf(
@@ -414,9 +478,17 @@ class MainActivity : FlutterActivity() {
         if (!adapter.isEnabled) {
             throw IllegalStateException("Bluetooth desligado.")
         }
+        if (currentTargetDeviceAddress.isBlank()) {
+            throw IllegalStateException(
+                "Medidor Bluetooth nao configurado. Selecione o dispositivo na tela de administrador.",
+            )
+        }
 
         while (!bloodPressureCancelled.get()) {
-            Log.i(bloodPressureTag, "Procurando $currentTargetDeviceName.")
+            Log.i(
+                bloodPressureTag,
+                "Procurando medidor ${currentTargetDeviceName.ifBlank { "sem nome" }} ($currentTargetDeviceAddress).",
+            )
             val device = scanForBloodPressureDevice(adapter)
             if (device == null) {
                 Thread.sleep(2_000)
@@ -444,8 +516,8 @@ class MainActivity : FlutterActivity() {
         var foundDevice: BluetoothDevice? = null
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val deviceName = result.scanRecord?.deviceName ?: result.device.name
-                if (deviceName == currentTargetDeviceName) {
+                val deviceAddress = result.device.address.uppercase()
+                if (deviceAddress == currentTargetDeviceAddress) {
                     foundDevice = result.device
                     latch.countDown()
                 }

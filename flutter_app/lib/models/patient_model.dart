@@ -57,11 +57,28 @@ class PatientModel {
           .toList(growable: false);
     }
 
+    if (firstItem is String) {
+      return rawEmbedding
+          .whereType<String>()
+          .map(_parseEmbeddingString)
+          .where((embedding) => embedding.isNotEmpty)
+          .toList(growable: false);
+    }
+
     return [
       rawEmbedding
           .whereType<num>()
           .map((value) => value.toDouble())
           .toList(growable: false),
     ];
+  }
+
+  static List<double> _parseEmbeddingString(String value) {
+    return value
+        .trim()
+        .split(RegExp(r'[\s,]+'))
+        .map(double.tryParse)
+        .whereType<double>()
+        .toList(growable: false);
   }
 }

@@ -9,7 +9,7 @@ import 'services/totem_mode_controller.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await TotemModeController.instance.load();
-  await BloodPressureBleService().applyTargetDeviceName();
+  await BloodPressureBleService().applyTargetDevice();
   runApp(const ProviderScope(child: IdentificationApp()));
 }
 

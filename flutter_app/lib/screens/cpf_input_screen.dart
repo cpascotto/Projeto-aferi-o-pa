@@ -1,13 +1,29 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/patient_model.dart';
+import '../navigation/erp_flow_navigation.dart';
+import '../providers/app_services_provider.dart';
 import '../providers/identification_provider.dart';
 import '../services/cpf_formatter.dart';
 import '../widgets/totem_back_button.dart';
 import 'face_enrollment_screen.dart';
+import 'status/connection_error_screen.dart';
+import 'status/equipment_not_configured_screen.dart';
+
+enum CpfInputMode {
+  enrollFace,
+  measurementOnly,
+  updateFaceThenMeasurement,
+}
 
 class CpfInputScreen extends ConsumerStatefulWidget {
-  const CpfInputScreen({super.key});
+  const CpfInputScreen({
+    super.key,
+    this.mode = CpfInputMode.enrollFace,
+  });
+
+  final CpfInputMode mode;
 
   @override
   ConsumerState<CpfInputScreen> createState() => _CpfInputScreenState();
@@ -27,23 +43,86 @@ class _CpfInputScreenState extends ConsumerState<CpfInputScreen> {
       return;
     }
 
-    final ok = await ref.read(identificationProvider.notifier).registerByCpf(
-          _cpfDigits,
+    await _submitToErp();
+  }
+
+  Future<void> _submitToErp() async {
+    try {
+      final equipmentSettings = ref.read(equipmentSettingsServiceProvider);
+      final unitId = await equipmentSettings.getUnitId();
+      final deviceId = await equipmentSettings.getDeviceId();
+
+      if (unitId.isEmpty || deviceId.isEmpty) {
+        if (!mounted) return;
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => const EquipmentNotConfiguredScreen(),
+          ),
         );
+        return;
+      }
 
-    if (!mounted) return;
+      // Envia apenas CPF para N2 — sem dados biométricos (face_image / embedding).
+      final response = await ref.read(erpApiServiceProvider).validateCpf(
+            unitId: unitId,
+            deviceId: deviceId,
+            recognizedAt: DateTime.now(),
+            cpf: _cpfDigits,
+          );
 
-    if (!ok) {
-      final state = ref.read(identificationProvider);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(state.errorMessage ?? 'Falha no cadastro.')),
+      if (!mounted) return;
+
+      // Msg=1 (biometria não cadastrada) ou Msg=3 (cliente ativo):
+      // armazena os dados do paciente no provider e abre o cadastro facial.
+      if (response.message == 1 || response.message == 3) {
+        final clientId = response.clientId;
+        final contractId = response.contractId;
+
+        if (clientId != null && contractId != null) {
+          final patient = PatientModel(
+            id: clientId,
+            name: response.clientName ?? '',
+            cpf: _cpfDigits,
+            faceEmbeddings: const [],
+          );
+          ref.read(identificationProvider.notifier).setErpData(
+                patient: patient,
+                contractId: contractId,
+                deviceId: deviceId,
+                nextInteractionAt: response.nextInteractionAt,
+              );
+        }
+
+        await Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => const FaceEnrollmentScreen(),
+          ),
+        );
+        return;
+      }
+
+      // Demais mensagens (2=CPF não encontrado, 4=inativo, 5/6=aferiu recentemente).
+      await navigateByErpResponse(
+        context,
+        response,
+        deviceId: deviceId,
       );
-      return;
+    } catch (error) {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => ConnectionErrorScreen(
+            message:
+                'Não conseguimos validar seu CPF no servidor agora.\nVerifique a conexão e tente novamente.',
+            detail: error.toString(),
+            onRetry: () {
+              Navigator.of(context).pop();
+              _submitToErp();
+            },
+          ),
+        ),
+      );
     }
-
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const FaceEnrollmentScreen()),
-    );
   }
 
   void _appendDigit(String digit) {
@@ -109,7 +188,7 @@ class _CpfInputScreenState extends ConsumerState<CpfInputScreen> {
                         ),
                         const SizedBox(height: 10),
                         const Text(
-                          'Vamos criar seu cadastro e registrar seu rosto.',
+                          'Vamos identificar você pelo seu CPF.',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 17,

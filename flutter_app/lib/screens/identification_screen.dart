@@ -53,6 +53,13 @@ class _IdentificationScreenState extends ConsumerState<IdentificationScreen> {
       );
     }
 
+    // Se vier do reconhecimento facial (N1), o CPF pode estar vazio.
+    // Nesse caso mostra o nome do paciente como identificação.
+    final hasCpf = patient.cpf.isNotEmpty;
+    final displayValue =
+        hasCpf ? formatCpfDigits(patient.cpf) : patient.name;
+    final confirmTitle = hasCpf ? 'Esse é seu CPF?' : 'É você?';
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
@@ -68,7 +75,8 @@ class _IdentificationScreenState extends ConsumerState<IdentificationScreen> {
                 duration: const Duration(milliseconds: 220),
                 child: _CpfConfirmationPanel(
                   key: const ValueKey('cpf-confirmation'),
-                  formattedCpf: formatCpfDigits(patient.cpf),
+                  title: confirmTitle,
+                  displayValue: displayValue,
                   onConfirm: () => _goToBloodPressureInstructions(patient.id),
                   onReject: _goToCpfRegistration,
                 ),
@@ -102,9 +110,15 @@ class _IdentificationScreenState extends ConsumerState<IdentificationScreen> {
   }
 
   void _goToBloodPressureInstructions(int patientId) {
+    final state = ref.read(identificationProvider);
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
-        builder: (_) => BloodPressureInstructionScreen(patientId: patientId),
+        builder: (_) => BloodPressureInstructionScreen(
+          patientId: patientId,
+          contractId: state.contractId,
+          deviceId: state.deviceId ?? '',
+          nextInteractionAt: state.nextInteractionAt,
+        ),
       ),
     );
   }
@@ -113,12 +127,14 @@ class _IdentificationScreenState extends ConsumerState<IdentificationScreen> {
 class _CpfConfirmationPanel extends StatelessWidget {
   const _CpfConfirmationPanel({
     super.key,
-    required this.formattedCpf,
+    required this.title,
+    required this.displayValue,
     required this.onConfirm,
     required this.onReject,
   });
 
-  final String formattedCpf;
+  final String title;
+  final String displayValue;
   final VoidCallback onConfirm;
   final VoidCallback onReject;
 
@@ -130,10 +146,10 @@ class _CpfConfirmationPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const SizedBox(height: 52),
-          const Text(
-            'Esse é seu CPF?',
+          Text(
+            title,
             textAlign: TextAlign.center,
-            style: TextStyle(
+            style: const TextStyle(
               fontSize: 33,
               fontWeight: FontWeight.w700,
               color: Color(0xFF113E69),
@@ -142,7 +158,7 @@ class _CpfConfirmationPanel extends StatelessWidget {
           ),
           const SizedBox(height: 28),
           Text(
-            formattedCpf,
+            displayValue,
             textAlign: TextAlign.center,
             style: const TextStyle(
               fontSize: 28,

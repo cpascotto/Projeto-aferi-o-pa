@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../services/blood_pressure_ble_service.dart';
+import '../services/equipment_settings_service.dart';
 import '../services/totem_mode_controller.dart';
+import 'admin_log_screen.dart';
 
 class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key});
@@ -15,15 +17,22 @@ class AdminScreen extends StatefulWidget {
 class _AdminScreenState extends State<AdminScreen> {
   final TotemModeController _totem = TotemModeController.instance;
   final BloodPressureBleService _bleService = BloodPressureBleService();
+  final EquipmentSettingsService _equipment = EquipmentSettingsService();
 
   // ── Totem ──────────────────────────────────────────────────
   late bool _totemEnabled;
 
   // ── Bluetooth ─────────────────────────────────────────────
-  String _savedDeviceName = BloodPressureBleService.defaultDeviceName;
-  String _selectedDeviceName = BloodPressureBleService.defaultDeviceName;
+  BleDeviceInfo? _savedBleDevice;
+  BleDeviceInfo? _selectedBleDevice;
   bool _isScanning = false;
-  List<String> _scannedDevices = [];
+  List<BleDeviceInfo> _scannedDevices = [];
+
+  // ── Equipamento (ID_Unidade / ID_Medidor) ─────────────────
+  final TextEditingController _unitIdCtrl = TextEditingController();
+  final TextEditingController _deviceIdCtrl = TextEditingController();
+  String _savedUnitId = '';
+  String _savedDeviceId = '';
 
   // ── Geral ─────────────────────────────────────────────────
   bool _isDirty = false;
@@ -34,14 +43,40 @@ class _AdminScreenState extends State<AdminScreen> {
     super.initState();
     _totemEnabled = _totem.enabled.value;
     unawaited(_loadSavedDevice());
+    unawaited(_loadEquipmentIds());
+    _unitIdCtrl.addListener(() {
+      setState(_recalcDirty);
+    });
+    _deviceIdCtrl.addListener(() {
+      setState(_recalcDirty);
+    });
+  }
+
+  @override
+  void dispose() {
+    _unitIdCtrl.dispose();
+    _deviceIdCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadEquipmentIds() async {
+    final unit = await _equipment.getUnitId();
+    final dev = await _equipment.getDeviceId();
+    if (!mounted) return;
+    setState(() {
+      _savedUnitId = unit;
+      _savedDeviceId = dev;
+      _unitIdCtrl.text = unit;
+      _deviceIdCtrl.text = dev;
+    });
   }
 
   Future<void> _loadSavedDevice() async {
-    final name = await _bleService.getSavedDeviceName();
+    final device = await _bleService.getSavedTargetDevice();
     if (!mounted) return;
     setState(() {
-      _savedDeviceName = name;
-      _selectedDeviceName = name;
+      _savedBleDevice = device;
+      _selectedBleDevice = device;
     });
     unawaited(_loadBondedDevices());
   }
@@ -58,7 +93,14 @@ class _AdminScreenState extends State<AdminScreen> {
 
   void _recalcDirty() {
     _isDirty = _totemEnabled != _totem.enabled.value ||
-        _selectedDeviceName != _savedDeviceName;
+        _deviceKey(_selectedBleDevice) != _deviceKey(_savedBleDevice) ||
+        _unitIdCtrl.text.trim() != _savedUnitId ||
+        _deviceIdCtrl.text.trim() != _savedDeviceId;
+  }
+
+  String _deviceKey(BleDeviceInfo? device) {
+    if (device == null) return '';
+    return '${device.id}|${device.name}';
   }
 
   void _onTotemChanged(bool value) {
@@ -68,16 +110,16 @@ class _AdminScreenState extends State<AdminScreen> {
     });
   }
 
-  void _onDeviceSelected(String name) {
+  void _onDeviceSelected(BleDeviceInfo device) {
     setState(() {
-      _selectedDeviceName = name;
+      _selectedBleDevice = device;
       _recalcDirty();
     });
   }
 
   void _resetDevice() {
     setState(() {
-      _selectedDeviceName = BloodPressureBleService.defaultDeviceName;
+      _selectedBleDevice = null;
       _recalcDirty();
     });
   }
@@ -102,12 +144,19 @@ class _AdminScreenState extends State<AdminScreen> {
     setState(() => _isSaving = true);
 
     await _totem.setEnabled(_totemEnabled);
-    await _bleService.saveDeviceName(_selectedDeviceName);
-    await _bleService.applyTargetDeviceName();
+    await _bleService.saveTargetDevice(_selectedBleDevice);
+    await _bleService.applyTargetDevice();
+
+    final unit = _unitIdCtrl.text.trim();
+    final dev = _deviceIdCtrl.text.trim();
+    await _equipment.setUnitId(unit);
+    await _equipment.setDeviceId(dev);
 
     if (!mounted) return;
     setState(() {
-      _savedDeviceName = _selectedDeviceName;
+      _savedBleDevice = _selectedBleDevice;
+      _savedUnitId = unit;
+      _savedDeviceId = dev;
       _isDirty = false;
       _isSaving = false;
     });
@@ -175,8 +224,7 @@ class _AdminScreenState extends State<AdminScreen> {
           const _SectionHeader(label: 'Dispositivo Bluetooth'),
           const SizedBox(height: 8),
           _DeviceSection(
-            savedDeviceName: _savedDeviceName,
-            selectedDeviceName: _selectedDeviceName,
+            selectedDevice: _selectedBleDevice,
             isScanning: _isScanning,
             scannedDevices: _scannedDevices,
             onScan: _scan,
@@ -184,18 +232,37 @@ class _AdminScreenState extends State<AdminScreen> {
             onReset: _resetDevice,
           ),
           const SizedBox(height: 24),
+
+          // ── Seção Identificação do equipamento ───────────────
+          const _SectionHeader(label: 'Identificação do equipamento'),
+          const SizedBox(height: 8),
+          _EquipmentSection(
+            unitController: _unitIdCtrl,
+            deviceController: _deviceIdCtrl,
+          ),
+          const SizedBox(height: 24),
+
+          // ── Seção Diagnóstico ─────────────────────────────────
+          const _SectionHeader(label: 'Diagnóstico'),
+          const SizedBox(height: 8),
+          _DiagnosticSection(
+            onViewLogs: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AdminLogScreen()),
+            ),
+          ),
+          const SizedBox(height: 24),
         ],
       ),
     );
   }
+
 }
 
 // ── Seção de dispositivo BLE ────────────────────────────────
 
 class _DeviceSection extends StatelessWidget {
   const _DeviceSection({
-    required this.savedDeviceName,
-    required this.selectedDeviceName,
+    required this.selectedDevice,
     required this.isScanning,
     required this.scannedDevices,
     required this.onScan,
@@ -203,18 +270,20 @@ class _DeviceSection extends StatelessWidget {
     required this.onReset,
   });
 
-  final String savedDeviceName;
-  final String selectedDeviceName;
+  final BleDeviceInfo? selectedDevice;
   final bool isScanning;
-  final List<String> scannedDevices;
+  final List<BleDeviceInfo> scannedDevices;
   final VoidCallback onScan;
-  final ValueChanged<String> onDeviceSelected;
+  final ValueChanged<BleDeviceInfo> onDeviceSelected;
   final VoidCallback onReset;
 
   @override
   Widget build(BuildContext context) {
-    final isDefault =
-        selectedDeviceName == BloodPressureBleService.defaultDeviceName;
+    final hasFixedDevice = selectedDevice?.id.isNotEmpty == true;
+    final title = selectedDevice?.displayName ?? 'Nenhum medidor fixado';
+    final subtitle = hasFixedDevice
+        ? 'ID: ${selectedDevice!.id}'
+        : 'Selecione pelo scan para travar este totem em um aparelho.';
 
     return Container(
       decoration: BoxDecoration(
@@ -244,12 +313,23 @@ class _DeviceSection extends StatelessWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        selectedDeviceName,
+                        title,
                         style: TextStyle(
-                          color: isDefault
-                              ? const Color(0xFF64748B)
-                              : const Color(0xFF07999B),
+                          color: hasFixedDevice
+                              ? const Color(0xFF07999B)
+                              : const Color(0xFF64748B),
                           fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        style: TextStyle(
+                          color: hasFixedDevice
+                              ? const Color(0xFF64748B)
+                              : const Color(0xFF94A3B8),
+                          fontSize: 12,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -293,10 +373,10 @@ class _DeviceSection extends StatelessWidget {
           else if (scannedDevices.isNotEmpty) ...[
             const Divider(height: 1, color: Color(0xFFE2E8F0)),
             ...scannedDevices.map(
-              (name) => _DeviceTile(
-                name: name,
-                isSelected: name == selectedDeviceName,
-                onTap: () => onDeviceSelected(name),
+              (device) => _DeviceTile(
+                device: device,
+                isSelected: _isSameDevice(device, selectedDevice),
+                onTap: () => onDeviceSelected(device),
               ),
             ),
           ] else
@@ -309,7 +389,7 @@ class _DeviceSection extends StatelessWidget {
             ),
 
           // Botão restaurar padrão
-          if (!isDefault) ...[
+          if (selectedDevice != null) ...[
             const Divider(height: 1, color: Color(0xFFE2E8F0)),
             TextButton(
               onPressed: onReset,
@@ -317,9 +397,9 @@ class _DeviceSection extends StatelessWidget {
                 foregroundColor: const Color(0xFF94A3B8),
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
-              child: Text(
-                'Restaurar padrão (${BloodPressureBleService.defaultDeviceName})',
-                style: const TextStyle(fontSize: 12),
+              child: const Text(
+                'Remover medidor fixado',
+                style: TextStyle(fontSize: 12),
               ),
             ),
           ],
@@ -327,21 +407,34 @@ class _DeviceSection extends StatelessWidget {
       ),
     );
   }
+
+  bool _isSameDevice(BleDeviceInfo device, BleDeviceInfo? selected) {
+    if (selected == null) return false;
+    if (device.id.isNotEmpty && selected.id.isNotEmpty) {
+      return device.id == selected.id;
+    }
+    return device.name == selected.name;
+  }
 }
 
 class _DeviceTile extends StatelessWidget {
   const _DeviceTile({
-    required this.name,
+    required this.device,
     required this.isSelected,
     required this.onTap,
   });
 
-  final String name;
+  final BleDeviceInfo device;
   final bool isSelected;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
+    final details = [
+      'ID: ${device.displayId}',
+      if (device.rssi != null) 'Sinal: ${device.rssi} dBm',
+    ].join('  ');
+
     return InkWell(
       onTap: onTap,
       child: Padding(
@@ -357,16 +450,30 @@ class _DeviceTile extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Text(
-                name,
-                style: TextStyle(
-                  color: isSelected
-                      ? const Color(0xFF07999B)
-                      : const Color(0xFF334155),
-                  fontSize: 14,
-                  fontWeight:
-                      isSelected ? FontWeight.w700 : FontWeight.w500,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    device.displayName,
+                    style: TextStyle(
+                      color: isSelected
+                          ? const Color(0xFF07999B)
+                          : const Color(0xFF334155),
+                      fontSize: 14,
+                      fontWeight:
+                          isSelected ? FontWeight.w700 : FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    details,
+                    style: const TextStyle(
+                      color: Color(0xFF64748B),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -447,6 +554,149 @@ class _SettingTile extends StatelessWidget {
         activeThumbColor: const Color(0xFF07999B),
         onChanged: onChanged,
       ),
+    );
+  }
+}
+
+// ── Seção de identificação do equipamento ───────────────────
+
+class _EquipmentSection extends StatelessWidget {
+  const _EquipmentSection({
+    required this.unitController,
+    required this.deviceController,
+  });
+
+  final TextEditingController unitController;
+  final TextEditingController deviceController;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Esses identificadores são enviados em todas as chamadas para a API do ERP.',
+            style: TextStyle(color: Color(0xFF64748B), fontSize: 12),
+          ),
+          const SizedBox(height: 14),
+          _EquipmentField(
+            label: 'ID Unidade',
+            hint: 'Ex.: 1',
+            controller: unitController,
+          ),
+          const SizedBox(height: 12),
+          _EquipmentField(
+            label: 'ID Medidor',
+            hint: 'Ex.: TOTEM-01',
+            controller: deviceController,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Seção de diagnóstico ────────────────────────────────────
+
+class _DiagnosticSection extends StatelessWidget {
+  const _DiagnosticSection({required this.onViewLogs});
+
+  final VoidCallback onViewLogs;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        leading: const Icon(
+          Icons.terminal_rounded,
+          color: Color(0xFF0D3E69),
+        ),
+        title: const Text(
+          'Ver logs do dispositivo',
+          style: TextStyle(
+            color: Color(0xFF0D3E69),
+            fontSize: 15,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        subtitle: const Text(
+          'Exibe todas as chamadas ao ERP, embeddings e erros capturados.',
+          style: TextStyle(color: Color(0xFF64748B), fontSize: 12),
+        ),
+        trailing: const Icon(
+          Icons.chevron_right,
+          color: Color(0xFF64748B),
+        ),
+        onTap: onViewLogs,
+      ),
+    );
+  }
+}
+
+class _EquipmentField extends StatelessWidget {
+  const _EquipmentField({
+    required this.label,
+    required this.hint,
+    required this.controller,
+  });
+
+  final String label;
+  final String hint;
+  final TextEditingController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xFF0D3E69),
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 6),
+        TextField(
+          controller: controller,
+          decoration: InputDecoration(
+            isDense: true,
+            hintText: hint,
+            hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 14),
+            filled: true,
+            fillColor: Colors.white,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: Color(0xFF07999B), width: 1.5),
+            ),
+          ),
+          style: const TextStyle(
+            color: Color(0xFF0D3E69),
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
     );
   }
 }

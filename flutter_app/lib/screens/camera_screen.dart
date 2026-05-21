@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -6,9 +7,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../navigation/app_route_observer.dart';
+import '../providers/identification_provider.dart';
 import '../services/blood_pressure_ble_service.dart';
 import '../services/face_detector_service.dart';
 import 'admin_screen.dart';
+import 'cpf_input_screen.dart';
 import 'identification_processing_screen.dart';
 
 class CameraScreen extends ConsumerStatefulWidget {
@@ -21,6 +24,7 @@ class CameraScreen extends ConsumerStatefulWidget {
 class _CameraScreenState extends ConsumerState<CameraScreen>
     with RouteAware, WidgetsBindingObserver {
   static const Duration _captureHoldDuration = Duration(seconds: 3);
+  static const Duration _earlyCaptureAt = Duration(milliseconds: 1500);
   static const Duration _completedStateDuration = Duration(milliseconds: 550);
   static const double _guideCenterX = 0.5;
   static const double _guideCenterY = 0.50;
@@ -38,14 +42,19 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   late FaceDetectorService _faceDetectorService;
   final BloodPressureBleService _bleService = BloodPressureBleService();
   Timer? _logoTapResetTimer;
+  Timer? _countdownTimer;
+  Timer? _earlyCaptureTimer;
 
   bool _processingFrame = false;
   bool _hasCaptured = false;
+  bool _captureStarted = false;
+  bool _captureFinalized = false;
   bool _isStreaming = false;
   bool _isInitializing = true;
   bool _isRestartingCamera = false;
 
   String? _cameraError;
+  String? _capturedImagePath;
   String _statusText = 'Inicializando câmera...';
 
   DateTime? _faceCenteredSince;
@@ -175,11 +184,15 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   }
 
   Future<void> _disposeCameraController({bool updateUi = true}) async {
+    _cancelCaptureTimers();
     final controller = _controller;
     _controller = null;
     _selectedCamera = null;
     _isStreaming = false;
     _processingFrame = false;
+    _captureStarted = false;
+    _captureFinalized = false;
+    _capturedImagePath = null;
 
     if (updateUi && mounted) {
       setState(() {
@@ -224,9 +237,13 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
 
     if (_isStreaming) return;
 
+    _cancelCaptureTimers();
     if (!mounted) return;
     setState(() {
       _hasCaptured = false;
+      _captureStarted = false;
+      _captureFinalized = false;
+      _capturedImagePath = null;
       _faceCenteredSince = null;
       _countdownSeconds = _captureHoldDuration.inSeconds;
       _visualState = _IdentificationVisualState.guide;
@@ -268,17 +285,13 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         _controller!.value.deviceOrientation,
       );
 
-      if (faceRect == null || _hasCaptured) {
-        _faceCenteredSince = null;
-        if (mounted) {
-          setState(() {
-            _visualState = _IdentificationVisualState.guide;
-            _countdownSeconds = _captureHoldDuration.inSeconds;
-            if (_isStreaming) {
-              _statusText = 'Centralize o rosto no círculo.';
-            }
-          });
-        }
+      if (_hasCaptured) return;
+
+      if (faceRect == null) {
+        _resetCaptureHold(
+          statusText:
+              _isStreaming ? 'Centralize o rosto no círculo.' : _statusText,
+        );
         return;
       }
 
@@ -286,71 +299,211 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       final now = DateTime.now();
 
       if (validationMessage != null) {
-        _faceCenteredSince = null;
-        if (mounted) {
-          setState(() {
-            _visualState = _IdentificationVisualState.guide;
-            _countdownSeconds = _captureHoldDuration.inSeconds;
-            _statusText = validationMessage;
-          });
-        }
+        _resetCaptureHold(statusText: validationMessage);
         return;
       }
 
-      _faceCenteredSince ??= now;
+      if (_faceCenteredSince == null) {
+        _startCaptureHold(now);
+      }
       final elapsed = now.difference(_faceCenteredSince!);
-      final remaining = (_captureHoldDuration - elapsed).inMilliseconds;
-      final countdown = remaining > 0 ? (remaining / 1000).ceil() : 0;
+      _updateCountdownUi(elapsed);
 
-      if (mounted) {
-        setState(() {
-          _visualState = _IdentificationVisualState.countdown;
-          _countdownSeconds = countdown.clamp(1, 3);
-          _statusText = 'Não se mova, estamos identificando você';
-        });
+      if (elapsed >= _earlyCaptureAt && !_captureStarted) {
+        await _captureIdentificationPhoto(fromValidatedFrame: true);
       }
 
-      if (elapsed < _captureHoldDuration) {
-        return;
-      }
-
-      _hasCaptured = true;
-      await _stopIdentificationStream();
-      if (mounted) {
-        setState(() {
-          _visualState = _IdentificationVisualState.completed;
-          _statusText = 'Concluído';
-        });
-      }
-
-      final picture = await _controller!.takePicture();
-      await Future<void>.delayed(_completedStateDuration);
-
-      if (!mounted) return;
-      await Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => IdentificationProcessingScreen(
-            imagePath: picture.path,
-          ),
-        ),
-      );
-
-      if (!mounted) return;
-      if (ModalRoute.of(context)?.isCurrent == true) {
-        await _resumeCamera();
+      if (elapsed >= _captureHoldDuration) {
+        await _finishCaptureHold();
       }
     } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _visualState = _IdentificationVisualState.guide;
-        _statusText = 'Erro na captura/identificação: $error';
-      });
-      _hasCaptured = false;
-      await _stopIdentificationStream();
-      await _resumeCamera();
+      await _recoverFromCaptureError(error);
     } finally {
       _processingFrame = false;
     }
+  }
+
+  Future<void> _captureIdentificationPhoto({
+    bool fromValidatedFrame = false,
+  }) async {
+    final controller = _controller;
+
+    if (controller == null ||
+        !controller.value.isInitialized ||
+        _captureStarted ||
+        _captureFinalized ||
+        _faceCenteredSince == null) {
+      return;
+    }
+
+    if (_processingFrame && !fromValidatedFrame) {
+      _earlyCaptureTimer?.cancel();
+      _earlyCaptureTimer = Timer(
+        const Duration(milliseconds: 120),
+        () => unawaited(_captureIdentificationPhoto()),
+      );
+      return;
+    }
+
+    _captureStarted = true;
+    _hasCaptured = true;
+    _earlyCaptureTimer?.cancel();
+
+    try {
+      await _stopIdentificationStream();
+      final picture = await controller.takePicture();
+      _capturedImagePath = picture.path;
+
+      if (_isHoldComplete) {
+        await _openIdentificationProcessing(picture.path);
+      }
+    } catch (error) {
+      await _recoverFromCaptureError(error);
+    }
+  }
+
+  Future<void> _finishCaptureHold() async {
+    if (_captureFinalized) return;
+
+    _countdownTimer?.cancel();
+
+    if (!_captureStarted) {
+      await _captureIdentificationPhoto();
+    }
+
+    final imagePath = _capturedImagePath;
+    if (imagePath == null) {
+      if (mounted) {
+        setState(() {
+          _countdownSeconds = 1;
+          _statusText = 'Capturando foto...';
+        });
+      }
+      return;
+    }
+
+    await _openIdentificationProcessing(imagePath);
+  }
+
+  Future<void> _openIdentificationProcessing(String imagePath) async {
+    if (_captureFinalized) return;
+
+    _captureFinalized = true;
+    _cancelCaptureTimers();
+
+    if (mounted) {
+      setState(() {
+        _visualState = _IdentificationVisualState.completed;
+        _statusText = 'Concluído';
+      });
+    }
+
+    await Future<void>.delayed(_completedStateDuration);
+
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => IdentificationProcessingScreen(
+          imagePath: imagePath,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+    if (ModalRoute.of(context)?.isCurrent == true) {
+      await _resumeCamera();
+    }
+  }
+
+  void _startCaptureHold(DateTime startedAt) {
+    _faceCenteredSince = startedAt;
+    _countdownTimer?.cancel();
+    _earlyCaptureTimer?.cancel();
+    _countdownTimer = Timer.periodic(
+      const Duration(milliseconds: 150),
+      (_) => _updateCountdownFromTimer(),
+    );
+    _earlyCaptureTimer = Timer(
+      _earlyCaptureAt,
+      () => unawaited(_captureIdentificationPhoto()),
+    );
+  }
+
+  void _updateCountdownFromTimer() {
+    final startedAt = _faceCenteredSince;
+    if (startedAt == null || _captureFinalized) return;
+
+    final elapsed = DateTime.now().difference(startedAt);
+    _updateCountdownUi(elapsed);
+
+    if (elapsed >= _captureHoldDuration) {
+      _countdownTimer?.cancel();
+      unawaited(_finishCaptureHold());
+    }
+  }
+
+  void _updateCountdownUi(Duration elapsed) {
+    if (!mounted || _captureFinalized) return;
+
+    final remaining = (_captureHoldDuration - elapsed).inMilliseconds;
+    final countdown = remaining > 0 ? (remaining / 1000).ceil() : 1;
+
+    setState(() {
+      _visualState = _IdentificationVisualState.countdown;
+      _countdownSeconds = countdown.clamp(1, 3);
+      _statusText = remaining <= 0 && _capturedImagePath == null
+          ? 'Capturando foto...'
+          : 'Não se mova, estamos identificando você';
+    });
+  }
+
+  bool get _isHoldComplete {
+    final startedAt = _faceCenteredSince;
+    return startedAt != null &&
+        DateTime.now().difference(startedAt) >= _captureHoldDuration;
+  }
+
+  void _resetCaptureHold({required String statusText}) {
+    if (_captureStarted && !_captureFinalized) return;
+
+    _cancelCaptureTimers();
+    _faceCenteredSince = null;
+    _hasCaptured = false;
+    _captureStarted = false;
+    _captureFinalized = false;
+    _capturedImagePath = null;
+
+    if (!mounted) return;
+    setState(() {
+      _visualState = _IdentificationVisualState.guide;
+      _countdownSeconds = _captureHoldDuration.inSeconds;
+      _statusText = statusText;
+    });
+  }
+
+  void _cancelCaptureTimers() {
+    _countdownTimer?.cancel();
+    _countdownTimer = null;
+    _earlyCaptureTimer?.cancel();
+    _earlyCaptureTimer = null;
+  }
+
+  Future<void> _recoverFromCaptureError(Object error) async {
+    _cancelCaptureTimers();
+    _faceCenteredSince = null;
+    _hasCaptured = false;
+    _captureStarted = false;
+    _captureFinalized = false;
+    _capturedImagePath = null;
+
+    if (!mounted) return;
+    setState(() {
+      _visualState = _IdentificationVisualState.guide;
+      _countdownSeconds = _captureHoldDuration.inSeconds;
+      _statusText = 'Erro na captura/identificação: $error';
+    });
+    await _stopIdentificationStream();
+    await _resumeCamera();
   }
 
   String? _validateFaceForCapture(Rect faceRect) {
@@ -440,6 +593,19 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     );
   }
 
+  void _openCpfInput() {
+    if (_hasCaptured) return;
+
+    ref.read(identificationProvider.notifier).reset();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const CpfInputScreen(
+          mode: CpfInputMode.measurementOnly,
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     appRouteObserver.unsubscribe(this);
@@ -503,12 +669,33 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                     ),
                   )
                 else
-                  _CameraPreviewSurface(
-                    controller: controller,
-                    visualState: _visualState,
-                    countdownSeconds: _countdownSeconds,
+                  SizedBox(
                     height: previewHeight,
                     width: constraints.maxWidth,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        _CameraPreviewSurface(
+                          controller: controller,
+                          visualState: _visualState,
+                          countdownSeconds: _countdownSeconds,
+                          capturedImagePath: _capturedImagePath,
+                          mirrorCapturedImage: _selectedCamera?.lensDirection ==
+                              CameraLensDirection.front,
+                          height: previewHeight,
+                          width: constraints.maxWidth,
+                        ),
+                        if (!_hasCaptured)
+                          Positioned(
+                            left: 28,
+                            right: 28,
+                            bottom: 8,
+                            child: _CpfShortcutButton(
+                              onPressed: _openCpfInput,
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 Container(
                   height: _bottomPanelHeight,
@@ -533,6 +720,40 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
               ],
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+class _CpfShortcutButton extends StatelessWidget {
+  const _CpfShortcutButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 50,
+      child: ElevatedButton.icon(
+        onPressed: onPressed,
+        icon: const Icon(Icons.dialpad_rounded, size: 24),
+        label: const Text(
+          'Digitar CPF',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0,
+          ),
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.white,
+          foregroundColor: const Color(0xFF0D3E69),
+          elevation: 6,
+          shadowColor: Colors.black.withValues(alpha: 0.22),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
         ),
       ),
     );
@@ -573,6 +794,8 @@ class _CameraPreviewSurface extends StatelessWidget {
     required this.controller,
     required this.visualState,
     required this.countdownSeconds,
+    required this.capturedImagePath,
+    required this.mirrorCapturedImage,
     required this.height,
     required this.width,
   });
@@ -580,17 +803,28 @@ class _CameraPreviewSurface extends StatelessWidget {
   final CameraController controller;
   final _IdentificationVisualState visualState;
   final int countdownSeconds;
+  final String? capturedImagePath;
+  final bool mirrorCapturedImage;
   final double height;
   final double width;
 
   @override
   Widget build(BuildContext context) {
+    final showCapturedStill =
+        visualState == _IdentificationVisualState.completed &&
+            capturedImagePath != null;
+    final capturedStill = showCapturedStill
+        ? _CapturedStillImage(
+            imagePath: capturedImagePath!,
+            mirrorHorizontally: mirrorCapturedImage,
+          )
+        : null;
     final previewSize = controller.value.previewSize;
     if (previewSize == null) {
       return SizedBox(
         width: width,
         height: height,
-        child: CameraPreview(controller),
+        child: capturedStill ?? CameraPreview(controller),
       );
     }
 
@@ -606,7 +840,7 @@ class _CameraPreviewSurface extends StatelessWidget {
               child: SizedBox(
                 width: previewSize.height,
                 height: previewSize.width,
-                child: CameraPreview(controller),
+                child: capturedStill ?? CameraPreview(controller),
               ),
             ),
           ),
@@ -616,6 +850,28 @@ class _CameraPreviewSurface extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _CapturedStillImage extends StatelessWidget {
+  const _CapturedStillImage({
+    required this.imagePath,
+    required this.mirrorHorizontally,
+  });
+
+  final String imagePath;
+  final bool mirrorHorizontally;
+
+  @override
+  Widget build(BuildContext context) {
+    final image = Image.file(File(imagePath), fit: BoxFit.cover);
+    if (!mirrorHorizontally) return image;
+
+    return Transform(
+      alignment: Alignment.center,
+      transform: Matrix4.diagonal3Values(-1.0, 1.0, 1.0),
+      child: image,
     );
   }
 }

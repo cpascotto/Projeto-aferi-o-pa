@@ -3,6 +3,32 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/blood_pressure_measurement.dart';
 
+class BleDeviceInfo {
+  const BleDeviceInfo({
+    required this.name,
+    required this.id,
+    this.rssi,
+  });
+
+  factory BleDeviceInfo.fromMap(Map<dynamic, dynamic> map) {
+    final name = (map['name'] ?? '').toString().trim();
+    final id = (map['id'] ?? map['address'] ?? '').toString().trim();
+    final rawRssi = map['rssi'];
+    return BleDeviceInfo(
+      name: name,
+      id: id,
+      rssi: rawRssi is int ? rawRssi : int.tryParse(rawRssi?.toString() ?? ''),
+    );
+  }
+
+  final String name;
+  final String id;
+  final int? rssi;
+
+  String get displayName => name.isNotEmpty ? name : 'Dispositivo sem nome';
+  String get displayId => id.isNotEmpty ? id : 'ID indisponivel';
+}
+
 class BloodPressureBleService {
   BloodPressureBleService({MethodChannel? channel})
       : _channel = channel ??
@@ -13,11 +39,20 @@ class BloodPressureBleService {
   final MethodChannel _channel;
 
   static const String defaultDeviceName = 'BT-BPM BLE';
-  static const String _prefKey = 'ble_target_device_name';
+  static const String _deviceNamePrefKey = 'ble_target_device_name';
+  static const String _deviceIdPrefKey = 'ble_target_device_id';
 
   // ── Aferição ────────────────────────────────────────────────
 
   Future<BloodPressureMeasurement> captureMeasurement() async {
+    final target = await getSavedTargetDevice();
+    if (target == null || target.id.isEmpty) {
+      throw StateError(
+        'Medidor Bluetooth nao configurado. Selecione o dispositivo na tela de administrador.',
+      );
+    }
+
+    await applyTargetDevice();
     final response = await _channel.invokeMapMethod<String, dynamic>(
       'captureMeasurement',
     );
@@ -44,48 +79,83 @@ class BloodPressureBleService {
     await _channel.invokeMethod<void>('requestEnableBluetooth');
   }
 
-  // ── Dispositivo alvo ────────────────────────────────────────
-
-  Future<String> getSavedDeviceName() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_prefKey) ?? defaultDeviceName;
+  Future<bool> ensureBluetoothPermissions() async {
+    final result = await _channel.invokeMethod<bool>(
+      'ensureBluetoothPermissions',
+    );
+    return result ?? false;
   }
 
-  Future<void> saveDeviceName(String name) async {
+  // ── Dispositivo alvo ────────────────────────────────────────
+
+  Future<BleDeviceInfo?> getSavedTargetDevice() async {
     final prefs = await SharedPreferences.getInstance();
-    if (name == defaultDeviceName) {
-      await prefs.remove(_prefKey);
+    final id = prefs.getString(_deviceIdPrefKey)?.trim() ?? '';
+    final name = prefs.getString(_deviceNamePrefKey)?.trim() ?? '';
+    if (id.isEmpty && name.isEmpty) return null;
+    return BleDeviceInfo(name: name, id: id);
+  }
+
+  Future<void> saveTargetDevice(BleDeviceInfo? device) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (device == null) {
+      await prefs.remove(_deviceNamePrefKey);
+      await prefs.remove(_deviceIdPrefKey);
+      return;
+    }
+
+    if (device.name.isEmpty) {
+      await prefs.remove(_deviceNamePrefKey);
     } else {
-      await prefs.setString(_prefKey, name);
+      await prefs.setString(_deviceNamePrefKey, device.name);
+    }
+
+    if (device.id.isEmpty) {
+      await prefs.remove(_deviceIdPrefKey);
+    } else {
+      await prefs.setString(_deviceIdPrefKey, device.id);
     }
   }
 
-  Future<void> applyTargetDeviceName() async {
-    final name = await getSavedDeviceName();
-    await _channel.invokeMethod<void>('setTargetDeviceName', {'name': name});
+  Future<void> applyTargetDevice() async {
+    final target = await getSavedTargetDevice();
+    await _channel.invokeMethod<void>('setTargetDevice', {
+      'name': target?.name ?? '',
+      'id': target?.id ?? '',
+    });
   }
 
   // ── Scan ────────────────────────────────────────────────────
 
-  Future<List<String>> getBondedDevices() async {
+  Future<List<BleDeviceInfo>> getBondedDevices() async {
+    await ensureBluetoothPermissions();
     final raw = await _channel.invokeListMethod<Object>('getBondedDevices');
-    return _parseDeviceNames(raw);
+    return _parseDevices(raw);
   }
 
-  Future<List<String>> scanDevices() async {
+  Future<List<BleDeviceInfo>> scanDevices() async {
+    await ensureBluetoothPermissions();
     final raw = await _channel.invokeListMethod<Object>('scanBluetoothDevices');
-    return _parseDeviceNames(raw);
+    return _parseDevices(raw);
   }
 
-  List<String> _parseDeviceNames(List<Object?>? raw) {
+  List<BleDeviceInfo> _parseDevices(List<Object?>? raw) {
     if (raw == null) return [];
-    final names = <String>{};
+    final devices = <BleDeviceInfo>[];
+    final seen = <String>{};
     for (final item in raw) {
       if (item is Map) {
-        final name = item['name']?.toString() ?? '';
-        if (name.isNotEmpty) names.add(name);
+        final device = BleDeviceInfo.fromMap(item);
+        if (device.id.isEmpty && device.name.isEmpty) continue;
+        final key = device.id.isNotEmpty ? device.id : device.name;
+        if (seen.add(key)) devices.add(device);
       }
     }
-    return names.toList()..sort();
+    devices.sort((a, b) {
+      final byName = a.displayName.compareTo(b.displayName);
+      if (byName != 0) return byName;
+      return a.id.compareTo(b.id);
+    });
+    return devices;
   }
 }

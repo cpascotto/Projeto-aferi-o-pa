@@ -54,6 +54,10 @@ chaquopy {
         version = "3.8"
         buildPython("py", "-3.8")
         pip {
+            // chaquo.com costuma ser lento; sem timeout maior o pip cai no PyPI
+            // publico que so tem .zip (codigo fonte) e Chaquopy nao compila nativo.
+            options("--timeout", "180")
+            options("--retries", "5")
             install("numpy==1.19.5")
             install("protobuf==3.20.3")
             install("h5py==2.10.0")
