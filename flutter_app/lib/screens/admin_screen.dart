@@ -1,23 +1,27 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../providers/app_services_provider.dart';
 import '../services/blood_pressure_ble_service.dart';
 import '../services/equipment_settings_service.dart';
+import '../services/erp_settings_service.dart';
 import '../services/totem_mode_controller.dart';
 import 'admin_log_screen.dart';
 
-class AdminScreen extends StatefulWidget {
+class AdminScreen extends ConsumerStatefulWidget {
   const AdminScreen({super.key});
 
   @override
-  State<AdminScreen> createState() => _AdminScreenState();
+  ConsumerState<AdminScreen> createState() => _AdminScreenState();
 }
 
-class _AdminScreenState extends State<AdminScreen> {
+class _AdminScreenState extends ConsumerState<AdminScreen> {
   final TotemModeController _totem = TotemModeController.instance;
   final BloodPressureBleService _bleService = BloodPressureBleService();
   final EquipmentSettingsService _equipment = EquipmentSettingsService();
+  final ErpSettingsService _erpSettings = ErpSettingsService.instance;
 
   // ── Totem ──────────────────────────────────────────────────
   late bool _totemEnabled;
@@ -34,6 +38,14 @@ class _AdminScreenState extends State<AdminScreen> {
   String _savedUnitId = '';
   String _savedDeviceId = '';
 
+  // ── Ambiente API ──────────────────────────────────────────
+  late ErpEnvironment _selectedEnvironment;
+  late ErpEnvironment _savedEnvironment;
+  final TextEditingController _homologationCtrl = TextEditingController();
+  final TextEditingController _productionCtrl = TextEditingController();
+  String _savedHomologationUrl = '';
+  String _savedProductionUrl = '';
+
   // ── Geral ─────────────────────────────────────────────────
   bool _isDirty = false;
   bool _isSaving = false;
@@ -42,6 +54,14 @@ class _AdminScreenState extends State<AdminScreen> {
   void initState() {
     super.initState();
     _totemEnabled = _totem.enabled.value;
+
+    _savedHomologationUrl = _erpSettings.homologationUrl;
+    _savedProductionUrl = _erpSettings.productionUrl;
+    _savedEnvironment = _erpSettings.environment;
+    _selectedEnvironment = _savedEnvironment;
+    _homologationCtrl.text = _savedHomologationUrl;
+    _productionCtrl.text = _savedProductionUrl;
+
     unawaited(_loadSavedDevice());
     unawaited(_loadEquipmentIds());
     _unitIdCtrl.addListener(() {
@@ -50,12 +70,20 @@ class _AdminScreenState extends State<AdminScreen> {
     _deviceIdCtrl.addListener(() {
       setState(_recalcDirty);
     });
+    _homologationCtrl.addListener(() {
+      setState(_recalcDirty);
+    });
+    _productionCtrl.addListener(() {
+      setState(_recalcDirty);
+    });
   }
 
   @override
   void dispose() {
     _unitIdCtrl.dispose();
     _deviceIdCtrl.dispose();
+    _homologationCtrl.dispose();
+    _productionCtrl.dispose();
     super.dispose();
   }
 
@@ -95,7 +123,32 @@ class _AdminScreenState extends State<AdminScreen> {
     _isDirty = _totemEnabled != _totem.enabled.value ||
         _deviceKey(_selectedBleDevice) != _deviceKey(_savedBleDevice) ||
         _unitIdCtrl.text.trim() != _savedUnitId ||
-        _deviceIdCtrl.text.trim() != _savedDeviceId;
+        _deviceIdCtrl.text.trim() != _savedDeviceId ||
+        _selectedEnvironment != _savedEnvironment ||
+        _homologationCtrl.text != _savedHomologationUrl ||
+        _productionCtrl.text != _savedProductionUrl;
+  }
+
+  void _onEnvironmentChanged(ErpEnvironment env) {
+    setState(() {
+      _selectedEnvironment = env;
+      _recalcDirty();
+    });
+  }
+
+  void _resetUrlsToDefault() {
+    setState(() {
+      _homologationCtrl.text = ErpUrlDefaults.homologation;
+      _productionCtrl.text = ErpUrlDefaults.production;
+      _recalcDirty();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'URLs restauradas para o padrão. Toque em Salvar para aplicar.',
+        ),
+      ),
+    );
   }
 
   String _deviceKey(BleDeviceInfo? device) {
@@ -141,6 +194,24 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Future<void> _save() async {
+    // Valida URL do ambiente ativo antes de qualquer coisa.
+    final homoUrl = _homologationCtrl.text.trim();
+    final prodUrl = _productionCtrl.text.trim();
+    final activeUrl =
+        _selectedEnvironment == ErpEnvironment.production ? prodUrl : homoUrl;
+
+    if (activeUrl.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'A URL do ambiente ${_selectedEnvironment == ErpEnvironment.production ? "Produção" : "Homologação"} '
+            'está vazia. Preencha antes de salvar.',
+          ),
+        ),
+      );
+      return;
+    }
+
     setState(() => _isSaving = true);
 
     await _totem.setEnabled(_totemEnabled);
@@ -152,11 +223,22 @@ class _AdminScreenState extends State<AdminScreen> {
     await _equipment.setUnitId(unit);
     await _equipment.setDeviceId(dev);
 
+    await _erpSettings.setHomologationUrl(homoUrl);
+    await _erpSettings.setProductionUrl(prodUrl);
+    await _erpSettings.setEnvironment(_selectedEnvironment);
+
+    // Invalida providers afetados → ErpApiService é recriado com URL nova.
+    ref.invalidate(erpUrlProvider);
+    ref.invalidate(erpApiServiceProvider);
+
     if (!mounted) return;
     setState(() {
       _savedBleDevice = _selectedBleDevice;
       _savedUnitId = unit;
       _savedDeviceId = dev;
+      _savedHomologationUrl = homoUrl;
+      _savedProductionUrl = prodUrl;
+      _savedEnvironment = _selectedEnvironment;
       _isDirty = false;
       _isSaving = false;
     });
@@ -217,6 +299,18 @@ class _AdminScreenState extends State<AdminScreen> {
                 'Mantém o app em tela cheia e impede o celular de apagar a tela.',
             value: _totemEnabled,
             onChanged: _onTotemChanged,
+          ),
+          const SizedBox(height: 24),
+
+          // ── Seção Ambiente API ──────────────────────────────
+          const _SectionHeader(label: 'Ambiente da API Forza'),
+          const SizedBox(height: 8),
+          _EnvironmentSection(
+            selectedEnvironment: _selectedEnvironment,
+            homologationController: _homologationCtrl,
+            productionController: _productionCtrl,
+            onEnvironmentChanged: _onEnvironmentChanged,
+            onResetToDefaults: _resetUrlsToDefault,
           ),
           const SizedBox(height: 24),
 
@@ -479,6 +573,233 @@ class _DeviceTile extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ── Seção de ambiente API ───────────────────────────────────
+
+class _EnvironmentSection extends StatelessWidget {
+  const _EnvironmentSection({
+    required this.selectedEnvironment,
+    required this.homologationController,
+    required this.productionController,
+    required this.onEnvironmentChanged,
+    required this.onResetToDefaults,
+  });
+
+  final ErpEnvironment selectedEnvironment;
+  final TextEditingController homologationController;
+  final TextEditingController productionController;
+  final ValueChanged<ErpEnvironment> onEnvironmentChanged;
+  final VoidCallback onResetToDefaults;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Ambiente ativo',
+            style: TextStyle(
+              color: Color(0xFF0D3E69),
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: _EnvironmentChoice(
+                  label: 'Homologação',
+                  isSelected:
+                      selectedEnvironment == ErpEnvironment.homologation,
+                  onTap: () =>
+                      onEnvironmentChanged(ErpEnvironment.homologation),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _EnvironmentChoice(
+                  label: 'Produção',
+                  isSelected: selectedEnvironment == ErpEnvironment.production,
+                  onTap: () => onEnvironmentChanged(ErpEnvironment.production),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          _UrlField(
+            label: 'URL Homologação',
+            controller: homologationController,
+            hint: ErpUrlDefaults.homologation,
+            isActive: selectedEnvironment == ErpEnvironment.homologation,
+          ),
+          const SizedBox(height: 14),
+          _UrlField(
+            label: 'URL Produção',
+            controller: productionController,
+            hint: 'Ainda não disponível',
+            isActive: selectedEnvironment == ErpEnvironment.production,
+          ),
+          const SizedBox(height: 14),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: onResetToDefaults,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('Restaurar padrão'),
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFF07999B),
+                textStyle: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EnvironmentChoice extends StatelessWidget {
+  const _EnvironmentChoice({
+    required this.label,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF07999B) : Colors.white,
+          border: Border.all(
+            color:
+                isSelected ? const Color(0xFF07999B) : const Color(0xFFCBD5E1),
+            width: isSelected ? 2 : 1,
+          ),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? Colors.white : const Color(0xFF334155),
+            fontSize: 15,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _UrlField extends StatelessWidget {
+  const _UrlField({
+    required this.label,
+    required this.controller,
+    required this.hint,
+    required this.isActive,
+  });
+
+  final String label;
+  final TextEditingController controller;
+  final String hint;
+  final bool isActive;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                color: Color(0xFF0D3E69),
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            if (isActive) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF07999B),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Text(
+                  'ATIVA',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 6),
+        TextField(
+          controller: controller,
+          keyboardType: TextInputType.url,
+          autocorrect: false,
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: const TextStyle(
+              color: Color(0xFF94A3B8),
+              fontSize: 12,
+            ),
+            isDense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide:
+                  const BorderSide(color: Color(0xFF07999B), width: 1.4),
+            ),
+            filled: true,
+            fillColor: Colors.white,
+          ),
+          style: const TextStyle(
+            color: Color(0xFF1D1B20),
+            fontSize: 13,
+            fontFamily: 'Courier',
+          ),
+        ),
+      ],
     );
   }
 }

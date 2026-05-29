@@ -1,0 +1,48 @@
+# ─── Build / artefatos ───────────────────────────────────────────────
+# Qualquer pasta build/ (raiz do flutter, android/build, android/app/build...)
+**/build/
+flutter_app/.dart_tool/
+flutter_app/.flutter-plugins
+flutter_app/.flutter-plugins-dependencies
+flutter_app/.pub-cache/
+flutter_app/.pub/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# APK gerado pelo build_vincere.bat
+vincere.apk
+
+# ─── Gradle / Android ────────────────────────────────────────────────
+.gradle/
+**/android/.gradle/
+**/android/captures/
+**/android/local.properties
+**/android/key.properties
+*.keystore
+*.jks
+
+# ─── Chaquopy / Python cache ─────────────────────────────────────────
+**/.cxx/
+*.pyc
+__pycache__/
+
+# ─── Sistema operacional ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── IDEs / editores ─────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+*.swp
+.history/
+
+# ─── Logs / temporários ──────────────────────────────────────────────
+*.log
+*.tmp

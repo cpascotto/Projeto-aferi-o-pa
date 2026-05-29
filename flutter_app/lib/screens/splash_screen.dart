@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/app_services_provider.dart';
-import 'camera_screen.dart';
+import 'attendance_mode_screen.dart';
 
 class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
@@ -38,7 +38,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
 
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const CameraScreen()),
+      MaterialPageRoute(builder: (_) => const AttendanceModeScreen()),
     );
   }
 

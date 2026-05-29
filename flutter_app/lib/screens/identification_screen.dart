@@ -53,12 +53,25 @@ class _IdentificationScreenState extends ConsumerState<IdentificationScreen> {
       );
     }
 
-    // Se vier do reconhecimento facial (N1), o CPF pode estar vazio.
-    // Nesse caso mostra o nome do paciente como identificação.
+    // Prioriza mostrar o NOME — tanto no fluxo de reconhecimento facial
+    // quanto no fluxo de Digitar CPF (o N2 também retorna Nome_Cliente).
+    // Se por algum motivo o nome não vier, usa o CPF como fallback.
+    final hasName = patient.name.isNotEmpty;
     final hasCpf = patient.cpf.isNotEmpty;
-    final displayValue =
-        hasCpf ? formatCpfDigits(patient.cpf) : patient.name;
-    final confirmTitle = hasCpf ? 'Esse é seu CPF?' : 'É você?';
+
+    final String displayValue;
+    final String confirmTitle;
+
+    if (hasName) {
+      displayValue = patient.name;
+      confirmTitle = 'É você?';
+    } else if (hasCpf) {
+      displayValue = formatCpfDigits(patient.cpf);
+      confirmTitle = 'Esse é seu CPF?';
+    } else {
+      displayValue = '';
+      confirmTitle = 'Confirmar identificação';
+    }
 
     return PopScope(
       canPop: false,
@@ -111,6 +124,12 @@ class _IdentificationScreenState extends ConsumerState<IdentificationScreen> {
 
   void _goToBloodPressureInstructions(int patientId) {
     final state = ref.read(identificationProvider);
+
+    // Tanto Início quanto Fim de atendimento passam pela MESMA tela de
+    // aferição (instruções + medição + resultado). A diferença está só no
+    // botão OK do resultado: Início envia N3, Fim envia F1. Essa decisão
+    // é feita dentro da BloodPressureInstructionScreen lendo o
+    // attendanceModeProvider.
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         builder: (_) => BloodPressureInstructionScreen(

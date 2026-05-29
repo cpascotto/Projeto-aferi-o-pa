@@ -8,6 +8,7 @@ import '../providers/identification_provider.dart';
 import '../services/cpf_formatter.dart';
 import '../widgets/totem_back_button.dart';
 import 'face_enrollment_screen.dart';
+import 'identification_screen.dart';
 import 'status/connection_error_screen.dart';
 import 'status/equipment_not_configured_screen.dart';
 
@@ -43,6 +44,13 @@ class _CpfInputScreenState extends ConsumerState<CpfInputScreen> {
       return;
     }
 
+    if (!isValidCpf(_cpfDigits)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('CPF inválido. Verifique os dígitos.')),
+      );
+      return;
+    }
+
     await _submitToErp();
   }
 
@@ -62,7 +70,16 @@ class _CpfInputScreenState extends ConsumerState<CpfInputScreen> {
         return;
       }
 
-      // Envia apenas CPF para N2 — sem dados biométricos (face_image / embedding).
+      // IMPORTANTE: N2 aqui só VALIDA o CPF — NÃO envia biometria.
+      //
+      // Se o usuário chegou aqui via Msg=1 do N1, foi porque o rosto que
+      // ele apresentou não bateu com o cadastrado. Enviar essa biometria
+      // como Biometria_Facial faria o Forza SOBRESCREVER o embedding bom
+      // pelo embedding ruim que acabou de falhar, quebrando o reconhecimento
+      // futuro.
+      //
+      // A atualização da biometria fica para o FaceEnrollmentScreen,
+      // que recaptura o rosto com qualidade controlada antes de salvar.
       final response = await ref.read(erpApiServiceProvider).validateCpf(
             unitId: unitId,
             deviceId: deviceId,
@@ -73,7 +90,8 @@ class _CpfInputScreenState extends ConsumerState<CpfInputScreen> {
       if (!mounted) return;
 
       // Msg=1 (biometria não cadastrada) ou Msg=3 (cliente ativo):
-      // armazena os dados do paciente no provider e abre o cadastro facial.
+      // armazena os dados do paciente no provider e decide o próximo passo
+      // de acordo com o modo de entrada.
       if (response.message == 1 || response.message == 3) {
         final clientId = response.clientId;
         final contractId = response.contractId;
@@ -93,6 +111,29 @@ class _CpfInputScreenState extends ConsumerState<CpfInputScreen> {
               );
         }
 
+        // measurementOnly = usuário clicou em "Digitar CPF" e quer
+        // pular o cadastro facial.
+        // Vai para a IdentificationScreen para confirmar "Esse é seu CPF?"
+        // antes de seguir para a aferição.
+        if (widget.mode == CpfInputMode.measurementOnly) {
+          if (clientId == null || contractId == null) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Não foi possível obter os dados do cliente.'),
+              ),
+            );
+            return;
+          }
+          await Navigator.of(context).pushReplacement(
+            MaterialPageRoute(
+              builder: (_) => const IdentificationScreen(),
+            ),
+          );
+          return;
+        }
+
+        // enrollFace / updateFaceThenMeasurement = cadastrar/atualizar
+        // a biometria antes de ir para a aferição.
         await Navigator.of(context).pushReplacement(
           MaterialPageRoute(
             builder: (_) => const FaceEnrollmentScreen(),

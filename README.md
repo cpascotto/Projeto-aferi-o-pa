@@ -1,62 +1,128 @@
-# Vincere — App Mobile
+# Vincere — Totem de Aferição
 
-App Flutter para identificacao facial e aferição de pressao arterial, com processamento on-device.
+Aplicativo Android (Flutter) para totem de autoatendimento: identifica o paciente
+por **reconhecimento facial** ou **CPF**, mede a **pressão arterial** via aparelho
+Bluetooth e registra o atendimento na **API Forza ERP**.
 
-## Estrutura
+Todo o processamento de imagem e o reconhecimento facial acontecem **no próprio
+dispositivo** — nenhuma foto é enviada para servidores. Apenas o *embedding*
+facial (vetor numérico) é trafegado.
+
+---
+
+## Estrutura do repositório
 
 ```
-flutter_app/        # codigo-fonte do app Flutter
-build_vincere.bat   # script de build e instalacao via ADB
+flutter_app/        Código-fonte do app Flutter
+build_vincere.bat   Script de build + instalação via ADB
+Diagrama Aferição.jpg   Diagrama do fluxo de atendimento
+README.md           Este arquivo
+DOCUMENTACAO.md     Documentação técnica completa
 ```
 
-## Arquitetura
+---
 
-1. O celular captura a imagem.
-2. O celular detecta e recorta o rosto localmente (ML Kit).
-3. O celular gera o embedding facial localmente (DeepFace / Facenet512 via Chaquopy).
-4. O celular compara os embeddings localmente com os baixados do backend.
-5. O backend persiste: dados do paciente, embeddings, amostras faciais e aferições.
+## Arquitetura (resumo)
 
-O backend **nao** processa imagens — atua apenas como camada de persistencia.
+```
+[Totem / celular]                         [Forza ERP - GeneXus]
+  câmera → detecta rosto (ML Kit)
+        → recorta + alinha (112x112)
+        → gera embedding (DeepFace/Facenet512, 512 floats)
+        → envia embedding ──────────────► N1: cosine similarity no backend
+                                          ◄── retorna o cliente identificado
+  mede pressão (Bluetooth BLE)
+        → envia medição ────────────────► N3 / N4 / F1
+```
+
+- **Identificação:** o app gera o embedding; o **Forza** faz a comparação
+  (cosine similarity) e devolve o cliente.
+- **Aferição:** lida via Bluetooth de um medidor de pressão e registrada no ERP.
+- **Endpoint único:** todas as ações (N1, N2, N3, N4, F1) usam o mesmo endpoint
+  REST do Forza, com o envelope `sdtAfericao01Ent`.
+
+---
+
+## Fluxo de atendimento
+
+```
+Tela inicial  →  [Início de atendimento]  ou  [Fim de atendimento]
+       │
+       ▼
+   Câmera (reconhecimento facial)  ─ ou ─  Digitar CPF
+       │
+       ▼
+   "É você?" (confirmação)
+       │
+       ▼
+   Instruções + medição da pressão (Bluetooth)
+       │
+       ▼
+   Resultado  →  OK
+       │
+   ┌───┴───────────────┐
+   ▼                   ▼
+ Início = N3        Fim = F1
+ (registra)         (finaliza)
+```
+
+Detalhes completos em [`DOCUMENTACAO.md`](DOCUMENTACAO.md).
+
+---
 
 ## Como buildar
 
-### Pre-requisitos
+### Pré-requisitos
 
-- Flutter instalado em `C:\flutter`
-- Android SDK instalado
-- Android Studio com JBR
-- Celular conectado via USB com depuracao USB ativa
+- Flutter instalado (padrão do script: `C:\flutter`)
+- Android Studio (usa o JBR como Java)
+- Android SDK + `platform-tools` (ADB)
+- Celular Android 7.0+ com **Depuração USB** ativa
 
-### Build e instalacao
+### Build e instalação
 
-1. Abra `build_vincere.bat` e confirme as configuracoes no topo do arquivo:
-   - `API_BASE_URL` — URL da API de producao
-   - `FLUTTER_ROOT`, `ANDROID_SDK_ROOT`, `JAVA_HOME` — caminhos das ferramentas
-
-2. Execute:
-   ```
-   build_vincere.bat
-   ```
-
-O script vai:
-- Testar conectividade com a API
-- Rodar `flutter clean` + `flutter pub get`
-- Gerar o APK com as variaveis de ambiente corretas
-- Instalar no celular via ADB
-- Copiar o APK para `Downloads` do celular como `app-mobile-debug.apk`
-
-O APK final tambem fica salvo em:
-```
-flutter_app\build\app\outputs\flutter-apk\vincere.apk
+```bat
+build_vincere.bat
 ```
 
-## Variaveis de ambiente do app
+O script:
+1. Mapeia um drive virtual (`X:`) para contornar espaços no caminho
+2. Verifica conectividade com o ERP (informativo)
+3. Confirma o dispositivo conectado no ADB
+4. Roda `flutter pub get` e gera o APK release
+5. Instala no celular e copia o APK para a pasta `Download` do aparelho
 
-| Variavel | Descricao |
+> **Importante:** o build deve rodar pelo drive virtual que o script cria.
+> Buildar direto de uma pasta sincronizada (OneDrive/Dropbox) pode falhar com
+> erro de path no Gradle.
+
+APK gerado em:
+```
+flutter_app/build/app/outputs/flutter-apk/app-release.apk
+```
+
+---
+
+## Configuração (tela de administrador)
+
+Toque **5 vezes na logo** (tela inicial ou câmera) para abrir o painel. Lá é
+possível configurar:
+
+- **Ambiente da API** — Homologação / Produção (URLs editáveis)
+- **Identificação do equipamento** — ID Unidade e nome do totem (ID Medidor)
+- **Dispositivo Bluetooth** — medidor de pressão pareado
+- **Diagnóstico** — visualização dos logs do dispositivo
+
+---
+
+## Tecnologias
+
+| Camada | Tecnologia |
 |---|---|
-| `API_BASE_URL` | URL principal da API |
-| `API_FALLBACK_BASE_URL` | URL de fallback da API |
-| `ERP_AFERICAO_URL` | URL unica da Forza para `sdtAfericao01Ent` |
+| App | Flutter + Riverpod |
+| Detecção de rosto | Google ML Kit |
+| Embedding facial | DeepFace / Facenet512 (TensorFlow via Chaquopy) |
+| Bluetooth | BLE nativo (Android/Kotlin) |
+| Backend | Forza ERP (GeneXus) |
 
-Todas sao injetadas via `--dart-define` no momento do build.
+Veja a [`DOCUMENTACAO.md`](DOCUMENTACAO.md) para detalhes de cada parte.

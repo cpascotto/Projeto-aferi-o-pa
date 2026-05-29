@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../navigation/root_navigation.dart';
+import '../../widgets/totem_back_button.dart';
 
 /// Tela genérica de status/mensagem usando o mesmo estilo visual
 /// das telas internas do app (fundo azul-escuro, texto branco grande).
@@ -73,42 +74,52 @@ class _StatusMessageScreenState extends State<StatusMessageScreen> {
       child: Scaffold(
         backgroundColor: widget.backgroundColor,
         body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (widget.icon != null) ...[
-                    Icon(widget.icon, color: widget.iconColor, size: 92),
-                    const SizedBox(height: 28),
-                  ],
-                  Text(
-                    widget.title,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 36,
-                      fontWeight: FontWeight.w800,
-                      height: 1.1,
-                    ),
-                  ),
-                  if (widget.subtitle != null) ...[
-                    const SizedBox(height: 22),
-                    Text(
-                      widget.subtitle!,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w600,
-                        height: 1.3,
+          child: Stack(
+            children: [
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (widget.icon != null) ...[
+                        Icon(widget.icon, color: widget.iconColor, size: 92),
+                        const SizedBox(height: 28),
+                      ],
+                      Text(
+                        widget.title,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 36,
+                          fontWeight: FontWeight.w800,
+                          height: 1.1,
+                        ),
                       ),
-                    ),
-                  ],
-                ],
+                      if (widget.subtitle != null) ...[
+                        const SizedBox(height: 22),
+                        Text(
+                          widget.subtitle!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w600,
+                            height: 1.3,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
               ),
-            ),
+              Positioned(
+                left: 8,
+                top: 12,
+                child: TotemBackButton(onPressed: _exit),
+              ),
+            ],
           ),
         ),
       ),

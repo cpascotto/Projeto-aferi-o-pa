@@ -668,9 +668,13 @@ class MainActivity : FlutterActivity() {
             if (bloodPressureCancelled.get() || disconnected.get()) return null
             if (records.isEmpty()) return null
 
-            val firstIndex = records.keys.minOrNull() ?: return null
-            val payload = records[firstIndex] ?: return null
-            return decodeBloodPressureRecord(firstIndex, payload)
+            // Mesma lógica da POC (sync_tk.py): a medição recém-feita fica
+            // no MENOR índice do histórico devolvido pelo aparelho.
+            // Pegamos esse registro — é o que está sendo exibido na tela
+            // do aparelho no momento.
+            val latestIndex = records.keys.minOrNull() ?: return null
+            val payload = records[latestIndex] ?: return null
+            return decodeBloodPressureRecord(latestIndex, payload)
         } finally {
             try {
                 gattRef?.disconnect()
@@ -711,6 +715,10 @@ class MainActivity : FlutterActivity() {
                 if (raw.size == 13) {
                     val idx = raw[3].toInt() and 0xFF
                     records[idx] = raw.copyOfRange(4, 12)
+                    // DIAGNOSTICO: dump do pacote completo para mapear o
+                    // timestamp embutido. raw[4..11] = payload (8 bytes).
+                    val fullHex = raw.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+                    Log.i(bloodPressureTag, "RECORD idx=$idx full=$fullHex")
                 }
             }
         }

@@ -4,6 +4,7 @@ import '../services/api_service.dart';
 import '../services/embedding_service.dart';
 import '../services/equipment_settings_service.dart';
 import '../services/erp_api_service.dart';
+import '../services/erp_settings_service.dart';
 import '../services/face_detector_service.dart';
 import '../services/face_image_service.dart';
 
@@ -18,12 +19,13 @@ const String fallbackApiBaseUrlFromEnv = String.fromEnvironment(
   'API_FALLBACK_BASE_URL',
   defaultValue: '',
 );
-const String defaultErpAfericaoUrl =
-    'https://api.forzauno.com.br/KB16WT/rest/Forza/prcAfericao01';
-const String erpAfericaoUrlFromEnv = String.fromEnvironment(
-  'ERP_AFERICAO_URL',
-  defaultValue: defaultErpAfericaoUrl,
-);
+
+/// URL ativa da API Forza ERP — lida das configurações persistidas
+/// ([ErpSettingsService]). Quando o admin altera ambiente ou URL,
+/// invalidar este provider para refletir no [erpApiServiceProvider].
+final erpUrlProvider = Provider<String>((ref) {
+  return ErpSettingsService.instance.activeUrl;
+});
 
 final apiServiceProvider = Provider<ApiService>((ref) {
   return ApiService(
@@ -33,10 +35,11 @@ final apiServiceProvider = Provider<ApiService>((ref) {
 });
 
 final erpApiServiceProvider = Provider<ErpApiService>((ref) {
+  final afericaoUrl = ref.watch(erpUrlProvider);
   return ErpApiService(
     baseUrl: apiBaseUrlFromEnv,
     fallbackBaseUrl: fallbackApiBaseUrlFromEnv,
-    afericaoUrl: erpAfericaoUrlFromEnv,
+    afericaoUrl: afericaoUrl,
   );
 });
 

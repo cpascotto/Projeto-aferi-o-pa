@@ -30,7 +30,6 @@ class ErpApiService {
     final biometria = _encodeBiometria(faceEmbedding, faceImageB64);
     return _sendAction({
       'ID_Unidade': unitId,
-      'TMS_Reconhecimento': _formatDateTime(recognizedAt),
       if (patientId != null) 'ID_Cliente': patientId.toString(),
       if (biometria.isNotEmpty) 'Biometria_Facial': biometria,
       'Acao': 'N1',
@@ -48,7 +47,6 @@ class ErpApiService {
     final biometria = _encodeBiometria(faceEmbedding, faceImageB64);
     return _sendAction({
       'ID_Unidade': unitId,
-      'TMS_Reconhecimento': _formatDateTime(recognizedAt),
       if (biometria.isNotEmpty) 'Biometria_Facial': biometria,
       'CPF': cpf,
       'Acao': 'N2',
@@ -99,7 +97,6 @@ class ErpApiService {
     return _sendAction({
       'ID_Cliente': clientId.toString(),
       'ID_Acordo': contractId.toString(),
-      if (nextInteractionAt != null) 'TMS_Proxima_interacao': nextInteractionAt,
       'Acao': 'F1',
     });
   }
@@ -161,18 +158,6 @@ class ErpApiService {
       return jsonEncode(embedding);
     }
     return imageB64 ?? '';
-  }
-
-  /// Formata DateTime para o padrão esperado pelo Forza: "yyyy-MM-dd HH:mm:ss"
-  String _formatDateTime(DateTime dt) {
-    final local = dt.toLocal();
-    final y = local.year.toString().padLeft(4, '0');
-    final mo = local.month.toString().padLeft(2, '0');
-    final d = local.day.toString().padLeft(2, '0');
-    final h = local.hour.toString().padLeft(2, '0');
-    final mi = local.minute.toString().padLeft(2, '0');
-    final s = local.second.toString().padLeft(2, '0');
-    return '$y-$mo-$d $h:$mi:$s';
   }
 
   String? _extractError(Map<String, dynamic> json) {

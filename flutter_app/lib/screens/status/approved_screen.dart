@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../navigation/root_navigation.dart';
+import '../../widgets/totem_back_button.dart';
 import 'thank_you_screen.dart';
 
 /// Msg 8 - Liberado para atendimento.
@@ -42,28 +44,42 @@ class _ApprovedScreenState extends State<ApprovedScreen> {
       child: Scaffold(
         backgroundColor: const Color(0xFF0D3E69),
         body: SafeArea(
-          child: Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: const [
-                Icon(
-                  Icons.check_circle_outline,
-                  color: Color(0xFF1DB53F),
-                  size: 92,
+          child: Stack(
+            children: [
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    Icon(
+                      Icons.check_circle_outline,
+                      color: Color(0xFF1DB53F),
+                      size: 92,
+                    ),
+                    SizedBox(height: 28),
+                    Text(
+                      'Liberado para\natendimento',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 36,
+                        fontWeight: FontWeight.w800,
+                        height: 1.1,
+                      ),
+                    ),
+                  ],
                 ),
-                SizedBox(height: 28),
-                Text(
-                  'Liberado para\natendimento',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 36,
-                    fontWeight: FontWeight.w800,
-                    height: 1.1,
-                  ),
+              ),
+              Positioned(
+                left: 8,
+                top: 12,
+                child: TotemBackButton(
+                  onPressed: () {
+                    _timer?.cancel();
+                    popToRootRoute(context);
+                  },
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),

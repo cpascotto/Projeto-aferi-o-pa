@@ -4,9 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/blood_pressure_measurement.dart';
+import '../navigation/root_navigation.dart';
 import '../providers/app_services_provider.dart';
+import '../providers/attendance_mode_provider.dart';
 import '../services/blood_pressure_ble_service.dart';
 import '../services/erp_api_service.dart';
+import '../widgets/totem_back_button.dart';
 import 'blood_pressure_result_screen.dart';
 import 'status/approved_screen.dart';
 import 'status/connection_error_screen.dart';
@@ -38,6 +41,7 @@ class _BloodPressureInstructionScreenState
 
   bool _isLeaving = false;
   bool _isProcessingResult = false;
+  bool _isRefusing = false;
   _MeasurementSaveResult? _lastSaveResult;
 
   @override
@@ -47,9 +51,24 @@ class _BloodPressureInstructionScreenState
   }
 
   Future<void> _captureMeasurementLoop() async {
+    // Garante estado BLE limpo antes da primeira tentativa.
+    // Algumas vezes a primeira sessão herda estado de uma medição anterior
+    // e o nativo "engasga" — esse stop + delay resolve isso.
+    try {
+      await _bleService.stopCapture();
+    } catch (_) {
+      // ignorado — só queremos zerar o estado
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+
     while (mounted && !_isLeaving) {
       try {
-        final measurement = await _bleService.captureMeasurement();
+        // Timeout de 90s: se a medição não chegar nesse tempo, jogamos
+        // exceção para o catch reiniciar o ciclo (resolve o caso de
+        // conexão estabelecida mas medição que não chega).
+        final measurement = await _bleService
+            .captureMeasurement()
+            .timeout(const Duration(seconds: 90));
         if (!mounted || _isLeaving) return;
 
         // Mostra a tela de resultado com Repetir / OK.
@@ -113,6 +132,15 @@ class _BloodPressureInstructionScreenState
           );
           return;
         }
+
+        // Zera sessão BLE antes de tentar de novo — evita ficar preso
+        // num estado em que o aparelho está conectado mas a medição
+        // não chega no app.
+        try {
+          await _bleService.stopCapture();
+        } catch (_) {
+          // ignorado
+        }
         await Future<void>.delayed(const Duration(seconds: 2));
       }
     }
@@ -127,23 +155,40 @@ class _BloodPressureInstructionScreenState
   ) async {
     int attempts = 0;
     Object? lastError;
+    // Modo escolhido na home:
+    //  - inicio → registra a aferição (N3)
+    //  - fim    → finaliza o atendimento (F1) ao apertar OK no resultado
+    final mode = ref.read(attendanceModeProvider);
     while (mounted && !_isLeaving && attempts < 5) {
       try {
         final contractId = widget.contractId;
         if (contractId == null) {
           throw Exception('Contrato ERP não disponível — medição não pode ser registrada.');
         }
-        final response =
-            await ref.read(erpApiServiceProvider).registerMeasurement(
-                  deviceId: widget.deviceId,
-                  clientId: widget.patientId,
-                  contractId: contractId,
-                  nextInteractionAt: widget.nextInteractionAt,
-                  systolic: measurement.systolic,
-                  diastolic: measurement.diastolic,
-                  bpm: measurement.bpm,
-                  rawPayload: measurement.rawPayload,
-                );
+
+        final ErpResponse response;
+        if (mode == AttendanceMode.fim) {
+          // Fim de atendimento: mesmo fluxo de aferição, mas no OK do
+          // resultado chamamos F1 (finaliza) em vez de N3.
+          response = await ref.read(erpApiServiceProvider).finalizeSession(
+                deviceId: widget.deviceId,
+                clientId: widget.patientId,
+                contractId: contractId,
+                nextInteractionAt: widget.nextInteractionAt,
+              );
+        } else {
+          // Início de atendimento: registra a medição (N3).
+          response = await ref.read(erpApiServiceProvider).registerMeasurement(
+                deviceId: widget.deviceId,
+                clientId: widget.patientId,
+                contractId: contractId,
+                nextInteractionAt: widget.nextInteractionAt,
+                systolic: measurement.systolic,
+                diastolic: measurement.diastolic,
+                bpm: measurement.bpm,
+                rawPayload: measurement.rawPayload,
+              );
+        }
         return _MeasurementSaveResult.successWithErp(response);
       } catch (error) {
         lastError = error;
@@ -158,6 +203,15 @@ class _BloodPressureInstructionScreenState
   }
 
   Future<void> _navigateAfterMeasurement(ErpResponse? response) async {
+    // Fim de atendimento: o OK já chamou F1 (finaliza). Não há aferição a
+    // avaliar — vai direto para a tela de encerramento.
+    if (ref.read(attendanceModeProvider) == AttendanceMode.fim) {
+      await Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const ThankYouScreen()),
+      );
+      return;
+    }
+
     // 7=Sistólica fora, 14=Diastólica fora, 15=BPM fora, 16=Aguardar Fisio
     if (response?.message == 7 ||
         response?.message == 14 ||
@@ -205,9 +259,23 @@ class _BloodPressureInstructionScreenState
     );
   }
 
+  // "Não quero aferir" → registra a recusa via N4, NOS DOIS MODOS
+  // (Início e Fim).
+  //
+  // NOTA SOBRE O DIAGRAMA: hoje NÃO existe F1 para a recusa — nem no diagrama
+  // nem na regra atual. Por isso a recusa sempre chama N4, mesmo no modo Fim.
+  // (Só o botão OK do resultado é que dispara F1 no modo Fim.)
+  // Caso no futuro a recusa também precise finalizar via F1, o ponto de
+  // implementação é aqui: após o registerRefusal, chamar finalizeSession.
   Future<void> _refuseMeasurement() async {
-    if (_isLeaving) return;
+    if (_isLeaving || _isRefusing) return;
     _isLeaving = true;
+
+    // Mostra overlay de loading enquanto o N4 é processado.
+    if (mounted) {
+      setState(() => _isRefusing = true);
+    }
+
     unawaited(_bleService.stopCapture());
 
     final contractId = widget.contractId;
@@ -250,6 +318,13 @@ class _BloodPressureInstructionScreenState
     super.dispose();
   }
 
+  void _backToStart() {
+    if (_isLeaving || _isRefusing) return;
+    _isLeaving = true;
+    unawaited(_bleService.stopCapture());
+    popToRootRoute(context);
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -260,19 +335,74 @@ class _BloodPressureInstructionScreenState
       child: Scaffold(
         backgroundColor: const Color(0xFF0D3E69),
         body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 20, 18, 12),
-            child: Column(
-              children: [
-                const Expanded(
-                  child: _InstructionViewport(
-                    child: _InstructionBody(),
-                  ),
+          child: Stack(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 60, 18, 12),
+                child: Column(
+                  children: [
+                    const Expanded(
+                      child: _InstructionViewport(
+                        child: _InstructionBody(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    _RefuseButton(
+                      enabled: !_isRefusing,
+                      onPressed: () => unawaited(_refuseMeasurement()),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 8),
-                _RefuseButton(onPressed: () => unawaited(_refuseMeasurement())),
-              ],
-            ),
+              ),
+              Positioned(
+                left: 8,
+                top: 12,
+                child: TotemBackButton(
+                  onPressed: _isRefusing ? null : _backToStart,
+                ),
+              ),
+              if (_isRefusing) const _RefusingOverlay(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Overlay mostrado enquanto o N4 é processado ─────────────────────────────
+
+class _RefusingOverlay extends StatelessWidget {
+  const _RefusingOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: ColoredBox(
+        color: const Color(0xCC0D3E69),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: const [
+              SizedBox(
+                width: 64,
+                height: 64,
+                child: CircularProgressIndicator(
+                  color: Colors.white,
+                  strokeWidth: 5,
+                ),
+              ),
+              SizedBox(height: 24),
+              Text(
+                'Encerrando atendimento...',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -433,9 +563,13 @@ class _MeasurementSaveResult {
 }
 
 class _RefuseButton extends StatelessWidget {
-  const _RefuseButton({required this.onPressed});
+  const _RefuseButton({
+    required this.onPressed,
+    this.enabled = true,
+  });
 
   final VoidCallback onPressed;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -443,11 +577,11 @@ class _RefuseButton extends StatelessWidget {
       width: double.infinity,
       height: 52,
       child: OutlinedButton(
-        onPressed: onPressed,
+        onPressed: enabled ? onPressed : null,
         style: OutlinedButton.styleFrom(
           foregroundColor: Colors.white,
           side: BorderSide(
-            color: Colors.white.withValues(alpha: 0.6),
+            color: Colors.white.withValues(alpha: enabled ? 0.6 : 0.25),
             width: 1.5,
           ),
           shape: RoundedRectangleBorder(

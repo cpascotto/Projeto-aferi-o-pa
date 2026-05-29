@@ -10,6 +10,7 @@ import '../navigation/app_route_observer.dart';
 import '../providers/identification_provider.dart';
 import '../services/blood_pressure_ble_service.dart';
 import '../services/face_detector_service.dart';
+import '../widgets/totem_back_button.dart';
 import 'admin_screen.dart';
 import 'cpf_input_screen.dart';
 import 'identification_processing_screen.dart';
@@ -616,6 +617,14 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     super.dispose();
   }
 
+  // Volta para a tela inicial (escolha Início/Fim de atendimento).
+  void _backToHome() {
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = _controller;
@@ -625,7 +634,9 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       backgroundColor: Colors.white,
       body: SafeArea(
         bottom: false,
-        child: LayoutBuilder(
+        child: Stack(
+          children: [
+            LayoutBuilder(
           builder: (context, constraints) {
             final availableHeight = constraints.maxHeight;
             final maxPreviewHeight =
@@ -720,6 +731,18 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
               ],
             );
           },
+            ),
+            // Botão voltar para a tela inicial (Início/Fim de atendimento).
+            Positioned(
+              left: 8,
+              top: 8,
+              child: TotemBackButton(
+                foregroundColor: const Color(0xFF113E69),
+                backgroundColor: const Color(0x14113E69),
+                onPressed: _backToHome,
+              ),
+            ),
+          ],
         ),
       ),
     );

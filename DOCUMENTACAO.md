@@ -1,414 +1,267 @@
-# Documentação — Vincere App Mobile
+# Documentação Técnica — Vincere Totem de Aferição
 
 ## Sumário
 
-1. [Visão Geral](#1-visão-geral)
+1. [Visão geral](#1-visão-geral)
 2. [Pré-requisitos](#2-pré-requisitos)
-3. [Configuração da API](#3-configuração-da-api)
-4. [Como buildar e instalar](#4-como-buildar-e-instalar)
-5. [Fluxo do app](#5-fluxo-do-app)
-6. [Endpoints da API](#6-endpoints-da-api)
-7. [Bluetooth — Medidor de pressão](#7-bluetooth--medidor-de-pressão)
-8. [Modo Totem](#8-modo-totem)
-9. [Problemas comuns](#9-problemas-comuns)
+3. [Build e instalação](#3-build-e-instalação)
+4. [Tela de administrador](#4-tela-de-administrador)
+5. [Fluxo de atendimento](#5-fluxo-de-atendimento)
+6. [Integração com a API Forza](#6-integração-com-a-api-forza)
+7. [Reconhecimento facial](#7-reconhecimento-facial)
+8. [Bluetooth — medidor de pressão](#8-bluetooth--medidor-de-pressão)
+9. [Modo totem](#9-modo-totem)
+10. [Problemas comuns](#10-problemas-comuns)
 
 ---
 
-## 1. Visão Geral
+## 1. Visão geral
 
-O Vincere é um app Android para:
+App Android para totem de autoatendimento. Funções:
 
-- Identificar pacientes por CPF
-- Cadastrar amostras faciais
-- Realizar identificação facial on-device (sem enviar imagens para o servidor)
-- Medir pressão arterial via dispositivo Bluetooth BLE
+- Identificar o paciente por **reconhecimento facial** ou **CPF**
+- Cadastrar / atualizar a biometria facial
+- Medir **pressão arterial** via aparelho Bluetooth BLE
+- Registrar o atendimento na **API Forza ERP**
 
-Todo o processamento de imagem e reconhecimento facial ocorre **dentro do próprio celular**. O backend é usado apenas para persistir dados (pacientes, embeddings, medições).
+O reconhecimento facial roda **on-device** (no celular). Imagens nunca saem do
+aparelho — apenas o *embedding* (vetor de 512 números) é enviado à API.
+
+A comparação dos embeddings (cosine similarity) é feita **no backend Forza**.
 
 ---
 
 ## 2. Pré-requisitos
 
-### Ferramentas de desenvolvimento
+### Ferramentas
 
-| Ferramenta | Versão mínima | Observação |
-|---|---|---|
-| Flutter | 3.x | Instalar em `C:\flutter` ou ajustar caminho no `.bat` |
-| Android Studio | Electric Eel+ | Necessário para o JBR (Java) e SDK |
-| Android SDK | API 24+ | Instalado pelo Android Studio |
-| ADB | qualquer | Incluído no Android SDK (`platform-tools`) |
+| Ferramenta | Observação |
+|---|---|
+| Flutter 3.x | Caminho padrão do script: `C:\flutter` |
+| Android Studio | Fornece o JBR (Java) e o SDK |
+| Android SDK (API 24+) | Inclui o ADB em `platform-tools` |
 
-### Celular / dispositivo
+### Dispositivo
 
 - Android 7.0 (API 24) ou superior
-- Depuração USB ativa (Configurações → Opções do desenvolvedor → Depuração USB)
-- Conectado ao computador via cabo USB antes de rodar o script
+- Depuração USB ativa
+- Conectado via USB antes de buildar
 
 ---
 
-## 3. Configuração da API
+## 3. Build e instalação
 
-O app se comunica com uma API backend (Laravel). Antes de buildar, abra o arquivo `build_vincere.bat` em um editor de texto e localize a seção de configuração no topo:
+Execute na raiz do projeto:
 
 ```bat
-:: --- Configuracoes de API ---
-set "API_BASE_URL=http://SEU_IP_AQUI:PORTA"
-set "API_FALLBACK_BASE_URL=http://SEU_IP_AQUI:PORTA"
+build_vincere.bat
 ```
 
-Substitua `SEU_IP_AQUI:PORTA` de acordo com o cenário:
+O script faz, em ordem:
 
----
+1. Mapeia drives virtuais (`X:` e `Y:`) apontando para a raiz do projeto —
+   necessário porque o Gradle falha com espaços/paths sincronizados no caminho.
+2. Confere os caminhos das ferramentas (Flutter, SDK, JBR, ADB).
+3. Testa o ERP (informativo, não bloqueia).
+4. Verifica o dispositivo via `adb devices`.
+5. Roda `flutter pub get` e `flutter build apk --release`.
+6. Instala no celular (`adb install -r`) e copia o APK para `/sdcard/Download`.
 
-### Cenário 1 — API em servidor de produção (IP público)
+### Configuração no topo do `.bat`
 
 ```bat
-set "API_BASE_URL=http://203.0.113.50:8030"
-set "API_FALLBACK_BASE_URL=http://203.0.113.50:8030"
-```
-
-> Substitua `203.0.113.50` pelo IP público do seu servidor e `8030` pela porta configurada.
-
----
-
-### Cenário 2 — API rodando no mesmo computador, celular na mesma rede Wi-Fi
-
-O celular não consegue acessar `localhost` do computador. Use o IP local do computador na rede.
-
-**Como descobrir o IP local no Windows:**
-
-1. Abra o Prompt de Comando (`cmd`)
-2. Digite: `ipconfig`
-3. Localize o adaptador de rede ativo (Wi-Fi ou Ethernet)
-4. Copie o valor de **Endereço IPv4**, por exemplo: `192.168.1.105`
-
-```bat
-set "API_BASE_URL=http://192.168.1.105:8000"
-set "API_FALLBACK_BASE_URL=http://192.168.1.105:8000"
-```
-
-> A porta padrão do servidor Laravel local é `8000`.  
-> O celular e o computador **precisam estar na mesma rede Wi-Fi**.
-
----
-
-### Cenário 3 — Emulador Android (não recomendado para este app)
-
-O emulador usa o endereço especial `10.0.2.2` para acessar o `localhost` do computador host:
-
-```bat
-set "API_BASE_URL=http://10.0.2.2:8000"
-set "API_FALLBACK_BASE_URL=http://10.0.2.2:8000"
-```
-
-> Este app usa câmera e Bluetooth, que **não funcionam bem em emuladores**. Recomenda-se usar celular físico.
-
----
-
-### Verificando se a API está acessível
-
-Antes de buildar, confirme que a API responde. Abra o navegador do celular (ou do computador) e acesse:
-
-```
-http://SEU_IP:PORTA/up
-```
-
-Deve retornar algo como:
-
-```json
-{"status": "ok"}
-```
-
-Também teste o endpoint de pacientes:
-
-```
-http://SEU_IP:PORTA/api/patients
-```
-
-Resposta esperada (banco vazio):
-
-```json
-{"patients": []}
-```
-
-Se não responder, verifique se o servidor está rodando e se o firewall libera a porta.
-
----
-
-## 4. Como buildar e instalar
-
-### Passo a passo
-
-1. Conecte o celular ao computador via USB
-2. Abra `build_vincere.bat` e configure a `API_BASE_URL` (veja seção anterior)
-3. Verifique os caminhos das ferramentas no topo do arquivo:
-
-```bat
+set "ERP_AFERICAO_URL=https://api.forzauno.com.br/KB16WT/rest/Forza/prcAfericao01"
 set "FLUTTER_ROOT=C:\flutter"
 set "ANDROID_SDK_ROOT=C:\Users\SEU_USUARIO\AppData\Local\Android\Sdk"
 set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
 ```
 
-> Ajuste `SEU_USUARIO` e os caminhos se necessário.
+> A URL do ERP também pode ser trocada em tempo de execução pela tela de
+> administrador, sem rebuildar.
 
-4. Dê duplo clique em `build_vincere.bat` (ou execute pelo terminal)
-
-O script vai:
-
-1. Mapear os drives virtuais (necessário por causa de espaços no caminho)
-2. Testar conectividade com a API
-3. Verificar o dispositivo conectado via ADB
-4. Rodar `flutter clean` + `flutter pub get`
-5. Gerar o APK com as URLs configuradas
-6. Instalar o APK no celular via ADB
-7. Copiar o APK para `Downloads` do celular
-
-### Onde fica o APK gerado
-
+APK final:
 ```
-flutter_app\build\app\outputs\flutter-apk\vincere.apk
-```
-
-O APK também é copiado para o celular em:
-
-```
-/sdcard/Download/app-mobile-debug.apk
+flutter_app/build/app/outputs/flutter-apk/app-release.apk
 ```
 
 ---
 
-## 5. Fluxo do app
+## 4. Tela de administrador
 
-```
-Splash Screen
-    │
-    ▼
-Tela de CPF
-    │  (CPF digitado e confirmado)
-    ▼
-Cadastro Facial
-    │  (rosto capturado com qualidade)
-    ▼
-Tela de Identificação  ←── (identificação bem-sucedida)
-    │  (confirma: SIM)
-    ▼
-Instrução de Pressão Arterial
-    │  (medição via Bluetooth)
-    ▼
-Resultado da Medição
-    │  (10 segundos)
-    ▼
-Tela inicial
-```
+Acesso: toque **5 vezes na logo** (na tela inicial ou na câmera).
 
-### Detalhes de cada tela
+Seções:
 
-#### Tela de CPF
-- Teclado numérico próprio (não usa teclado do sistema)
-- Aceita exatamente 11 dígitos
-- Envia para a API: `POST /api/patient/register-basic`
+1. **Modo de exibição** — liga/desliga o modo totem (tela cheia + tela sempre ligada)
+2. **Ambiente da API Forza** — alterna entre Homologação e Produção; URLs
+   editáveis; botão "Restaurar padrão". A mudança vale na hora, sem rebuild.
+3. **Identificação do equipamento** — `ID Unidade` (enviado em N1/N2) e
+   nome do totem (`ID Medidor`).
+4. **Dispositivo Bluetooth** — escaneia e fixa o medidor de pressão.
+5. **Diagnóstico** — visualizador dos logs do dispositivo.
 
-#### Cadastro Facial
-- Câmera traseira com overlay circular guia
-- Detecta rosto em tempo real via ML Kit
-- Exige que o rosto esteja centralizado e enquadrado
-- Validações de qualidade:
-  - Yaw (lateral) < 12°
-  - Roll (inclinação) < 8°
-  - Pitch (vertical) < 12°
-  - Probabilidade de olhos abertos > 35%
-- Contagem regressiva de 3 segundos antes de capturar
-- O embedding facial é gerado localmente (DeepFace Facenet512)
-- Envia para a API: `POST /api/patient/register-face-sample`
-
-#### Tela de Identificação
-- Exibe o CPF do paciente identificado
-- Botões: **SIM** (confirmar) ou **NÃO** (cadastrar novamente)
-
-#### Instrução de Pressão Arterial
-- Exibe imagens instrutivas sobre como posicionar o aparelho
-- Aguarda medição via Bluetooth
-- Salva resultado na API: `POST /api/patient/blood-pressure-measurements`
-- Retorna para tela inicial após 10 segundos
+As configurações são persistidas em `SharedPreferences`.
 
 ---
 
-## 6. Endpoints da API
+## 5. Fluxo de atendimento
 
-O app consome os seguintes endpoints. Todos usam `Content-Type: application/json`.
+### Tela inicial
 
-### `GET /api/patients`
+Dois botões:
 
-Retorna todos os pacientes com seus embeddings faciais.
+- **Início de atendimento** — paciente chegou; ao final registra a aferição (N3).
+- **Fim de atendimento** — paciente saindo; faz a mesma identificação, mas ao
+  final finaliza o atendimento (F1) em vez de registrar medição.
 
-**Resposta:**
-```json
-{
-  "patients": [
-    {
-      "id": 1,
-      "cpf": "12345678901",
-      "face_samples": [
-        {
-          "face_embedding": "[0.123, -0.456, ...]"
-        }
-      ]
-    }
-  ]
-}
+O modo escolhido é guardado e lido no momento da ação final.
+
+### Caminho completo
+
 ```
+[Início ou Fim]
+   ↓
+Câmera → reconhecimento facial (N1)
+   │           └─ ou botão "Digitar CPF" → N2
+   ↓
+"É você?" (confirma identidade)
+   ↓
+Instruções da aferição → mede pressão (BLE) → tela de resultado (Repetir / OK)
+   ↓
+OK:
+   • Início → N3 (registra medição)
+   • Fim    → F1 (finaliza atendimento)
+"Não quero aferir" → N4 (nos dois modos)
+```
+
+### Telas por código de mensagem do ERP
+
+| Cod | Significado | Tela |
+|---|---|---|
+| 1 | Biometria não encontrada | Informar CPF |
+| 2 | Cliente não cadastrado | Cliente não cadastrado |
+| 3 | Cliente ativo | "É você?" → aferição |
+| 4 | Sem acordo vigente | Cliente sem acordo |
+| 5 | Já tem intervenção em andamento | Acesso liberado |
+| 6 | Aferiu há menos de 1 hora | Aferição recente |
+| 7 / 14 / 15 / 16 | Valores fora da normalidade | Aguardar fisioterapeuta |
+| 8 | Liberado para atendimento | Liberado |
+| 9 | Aferição registrada | Obrigado |
+| 10 | Ação inválida | Mensagem genérica |
+| 11 / 12 | CPF obrigatório / inválido | Mensagem genérica |
+
+Roteamento centralizado em `lib/navigation/erp_flow_navigation.dart`.
 
 ---
 
-### `POST /api/patient/register-basic`
+## 6. Integração com a API Forza
 
-Cadastra um paciente pelo CPF.
+- **Backend:** Forza ERP (plataforma GeneXus)
+- **Endpoint único** para todas as ações (POST JSON)
+- **Envelope de entrada:** `{ "sdtAfericao01Ent": { ... } }`
+- **Envelope de saída:** `{ "sdtAfericao01Sai": { ID_Cliente, Nome_Cliente, ID_Acordo, TMS_Proxima_Intervencao, Erro, Mensagem: [{Cod, Msg}] } }`
 
-**Body:**
-```json
-{
-  "cpf": "12345678901"
-}
-```
+### Campos enviados por ação
 
-**Resposta:**
-```json
-{
-  "patient": {
-    "id": 1,
-    "cpf": "12345678901"
-  }
-}
-```
+| Ação | Campos |
+|---|---|
+| **N1** (identificar) | `ID_Unidade`, `Biometria_Facial`, `Acao` (+`ID_Cliente` ao persistir biometria) |
+| **N2** (validar CPF) | `ID_Unidade`, `Biometria_Facial`, `CPF`, `Acao` |
+| **N3** (medição) | `ID_Cliente`, `ID_Acordo`, `TMS_Proxima_interacao`, `Sistolica`, `Diastolica`, `BPM`, `Acao` |
+| **N4** (recusa) | `ID_Cliente`, `ID_Acordo`, `TMS_Proxima_interacao`, `Acao` |
+| **F1** (finalizar) | `ID_Cliente`, `ID_Acordo`, `Acao` |
 
----
+> `Biometria_Facial` é uma **string** JSON com o vetor de 512 floats
+> (`jsonEncode(List<double>)`), não um array JSON nativo.
 
-### `POST /api/patient/register-face-sample`
-
-Salva uma amostra facial de um paciente.
-
-**Body:**
-```json
-{
-  "patient_id": 1,
-  "capture_type": "enrollment",
-  "face_image_b64": "base64...",
-  "face_embedding": "[0.123, -0.456, ...]"
-}
-```
+Camada de serviço: `lib/services/erp_api_service.dart`.
 
 ---
 
-### `POST /api/patient/blood-pressure-measurements`
+## 7. Reconhecimento facial
 
-Salva uma medição de pressão arterial.
+Pipeline (em `lib/services/`):
 
-**Body:**
-```json
-{
-  "patient_id": 1,
-  "systolic": 120,
-  "diastolic": 80,
-  "bpm": 72,
-  "measured_at": "2025-01-15T10:30:00",
-  "raw_payload": "6C370100..."
-}
-```
+1. **Captura** — câmera frontal, foto disparada quando o rosto fica centralizado
+   por 3 s (`camera_screen.dart`).
+2. **Detecção** — Google ML Kit: landmarks, ângulos e olhos abertos
+   (`face_detector_service.dart`).
+3. **Validação de qualidade** — yaw < 12°, roll < 8°, pitch < 12°, olhos > 35%.
+4. **Alinhamento + recorte** — rotaciona pelos olhos, recorta o rosto, redimensiona
+   para 112×112, neutraliza o fundo (`face_image_service.dart`).
+5. **Embedding** — DeepFace/Facenet512 via Chaquopy (Python embarcado), retorna
+   512 floats (`embedding_service.dart` + `android/.../python/deepface_bridge.py`).
+6. **Comparação** — feita no backend Forza (cosine similarity).
 
----
-
-### `POST /api/mobile-debug-logs`
-
-Envia logs de debug do app para o servidor (usado em desenvolvimento).
+Modelo: **Facenet512** (pesos em `android/app/src/main/python/weights/`).
+TensorFlow 2.1 / Python 3.8 via Chaquopy (versões travadas por compatibilidade
+de wheels para Android).
 
 ---
 
-## 7. Bluetooth — Medidor de pressão
+## 8. Bluetooth — medidor de pressão
 
-O app se conecta automaticamente ao dispositivo BLE configurado em:
-
-```
-flutter_app/android/app/src/main/kotlin/.../MainActivity.kt
-```
-
-Configurações do dispositivo:
+Implementado no nativo Android (`MainActivity.kt`).
 
 | Parâmetro | Valor |
 |---|---|
-| Nome do dispositivo | `BT-BPM BLE` |
 | Serviço BLE | `FFF0` |
 | Característica Notify | `FFF4` |
 | Característica Write | `FFF5` |
-| Comando de início | `6C 37 01 00 5A` |
+| Comando de sincronização | `6C 37 01 00 5A` |
 
-> Para trocar o dispositivo de medição, altere as constantes correspondentes em `MainActivity.kt` e rebuilde o APK.
+**Fluxo:** scan pelo MAC → conecta → descobre serviços → habilita notificação
+em FFF4 → escreve o comando de sync em FFF5 → recebe os registros.
 
----
+O aparelho mantém um **histórico circular** (até ~18 medições). O app seleciona
+o registro de **menor índice** (`minOrNull`), que corresponde à medição
+recém-feita exibida na tela do aparelho.
 
-## 8. Modo Totem
+Decodificação de cada registro (8 bytes):
+- byte 5 → sistólica (BCD; offset +100 quando < 60)
+- byte 6 → diastólica (BCD)
+- byte 7 → pulso (BPM)
 
-O app tem suporte a **modo totem** (quiosque), pensado para uso em terminais de atendimento.
-
-**Como ativar:**
-- Toque **5 vezes** na logo na tela inicial para abrir o painel de administração
-- O painel permite ativar/desativar:
-  - Tela cheia (fullscreen imersivo)
-  - Tela sempre ligada (wake lock)
-
-Em modo totem, o app impede que o usuário saia acidentalmente pelo botão voltar ou pela barra de navegação.
-
----
-
-## 9. Problemas comuns
-
-### "API nao respondeu"
-
-O script testa a API antes de buildar. Se falhar:
-
-- Confirme que o servidor backend está rodando
-- Confirme que a `API_BASE_URL` no `.bat` está correta
-- Teste manualmente no navegador: `http://SEU_IP:PORTA/up`
-- Verifique se o firewall do Windows não está bloqueando a porta
+> O medidor é selecionado na tela de administrador. Para trocar de modelo de
+> aparelho, ajuste as constantes/decodificação no `MainActivity.kt`.
 
 ---
 
-### "Flutter nao encontrado"
+## 9. Modo totem
 
-Ajuste o caminho `FLUTTER_ROOT` no topo do `build_vincere.bat`:
+Pensado para terminais de autoatendimento. Ativado na tela de administrador:
 
-```bat
-set "FLUTTER_ROOT=C:\caminho\para\flutter"
-```
+- Tela cheia (imersivo)
+- Tela sempre ligada (wake lock)
+- Bloqueia saída acidental pelo botão voltar / barra de navegação
 
----
-
-### "ADB nao encontrado" / celular não reconhecido
-
-- Confirme que o cabo USB está conectado
-- Ative **Depuração USB** nas opções do desenvolvedor do celular
-- Em alguns celulares é necessário aceitar a permissão de depuração na tela
-- Teste manualmente: abra o terminal e digite `adb devices`
+Controlado por `lib/services/totem_mode_controller.dart`.
 
 ---
 
-### App instala mas não consegue conectar na API
+## 10. Problemas comuns
 
-Isso geralmente acontece quando:
+### Build falha com "parent is null" / erro de path no Gradle
+Builde sempre pelo `build_vincere.bat` (ele cria o drive virtual). Buildar
+direto de uma pasta do OneDrive/Dropbox causa esse erro.
 
-1. **Celular e computador em redes diferentes** — conecte ambos ao mesmo Wi-Fi
-2. **Usando `localhost` ou `127.0.0.1`** — o celular não acessa o `localhost` do PC; use o IP local (ex: `192.168.1.105`)
-3. **Firewall bloqueando** — libere a porta da API no Firewall do Windows
+### Celular não aparece no ADB
+- Cabo USB de dados (não só de carga)
+- Depuração USB ativa
+- Aceitar o popup de autorização no celular
+- Testar: `adb devices`
 
----
+### Aparelho de pressão conecta mas demora / reconecta
+Comportamento conhecido na primeira conexão (cache GATT do Android). Após
+1–2 reconexões a leitura ocorre normalmente.
 
-### Erro de câmera ou permissão negada
+### Valores de pressão diferentes da tela do aparelho
+O app usa o registro mais recente do histórico (`minOrNull`). Se aparecer um
+valor antigo, verifique se há medições antigas no buffer do aparelho.
 
-Na primeira execução, o app solicita permissão de câmera. Se negada acidentalmente:
+### App demora no primeiro reconhecimento
+Na primeira execução após instalar, o modelo Facenet512 é carregado (warmup),
+o que pode levar 20–40 s. Depois fica em cache.
 
-- Configurações do celular → Apps → Vincere → Permissões → Câmera → Permitir
-
----
-
-### App trava no warmup do Python/DeepFace
-
-Na primeira execução após instalação, o app inicializa o modelo de reconhecimento facial (Facenet512). Isso pode levar **20 a 40 segundos** na primeira vez. Aguarde até aparecer a tela principal.
+### Câmera sem permissão
+Configurações do celular → Apps → Vincere → Permissões → Câmera → Permitir.
